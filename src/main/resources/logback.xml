@@ -1,0 +1,22 @@
+<!-- src/main/resources/logback.xml -->
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Silence HikariCP debug -->
+    <logger name="com.zaxxer.hikari" level="ERROR" additivity="false">
+        <appender-ref ref="STDOUT"/>
+    </logger>
+
+    <!-- Disable Exposed SQL debug -->
+    <logger name="Exposed" level="OFF"/>
+    <logger name="org.jetbrains.exposed" level="OFF"/>
+
+    <!-- Default: no DEBUG output -->
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>
