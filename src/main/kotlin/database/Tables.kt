@@ -82,6 +82,67 @@ object SkinPrices : Table("skin_prices") {
     }
 }
 
+object TradeUpResults : Table("tradeup_results") {
+    val id = integer("id").autoIncrement()
+    val collectionAId = varchar("collection_a_id", 255)
+        .references(Collections.collectionId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val collectionBId = varchar("collection_b_id", 255)
+        .references(Collections.collectionId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val rarityId = varchar("rarity_id", 255)
+        .references(Rarities.rarityId, onDelete = ReferenceOption.SET_NULL, onUpdate = ReferenceOption.CASCADE)
+        .nullable()
+    val stattrak = bool("stattrak").default(false)
+    val outputFloat = double("output_float")
+    val roi = double("roi")
+    val profit = double("profit")
+    val inputCost = double("input_cost")
+    val outputCost = double("output_cost")
+    val createdAt = long("created_at").default(System.currentTimeMillis())
+
+    override val primaryKey = PrimaryKey(id)
+
+    init {
+        index("idx_tradeup_roi", false, roi)
+        index("idx_tradeup_profit", false, profit)
+        index("idx_tradeup_stattrak", false, stattrak)
+        index("idx_tradeup_created", false, createdAt)
+    }
+}
+
+object TradeUpInputs : Table("tradeup_inputs") {
+    val id = integer("id").autoIncrement()
+    val tradeUpResultId = integer("tradeup_result_id")
+        .references(TradeUpResults.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val skinId = varchar("skin_id", 255)
+        .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val amount = integer("amount")
+    val floatValue = double("float_value")
+    val pricePerUnit = decimal("price_per_unit", 10, 2)
+
+    override val primaryKey = PrimaryKey(id)
+
+    init {
+        index("idx_tradeup_input_result", false, tradeUpResultId)
+    }
+}
+
+object TradeUpOutputs : Table("tradeup_outputs") {
+    val id = integer("id").autoIncrement()
+    val tradeUpResultId = integer("tradeup_result_id")
+        .references(TradeUpResults.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val skinId = varchar("skin_id", 255)
+        .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val probability = double("probability")
+    val floatValue = double("float_value")
+    val price = decimal("price", 10, 2)
+
+    override val primaryKey = PrimaryKey(id)
+
+    init {
+        index("idx_tradeup_output_result", false, tradeUpResultId)
+    }
+}
+
 data class Collection(
     val collectionId: String,
     val name: String,
