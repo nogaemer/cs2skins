@@ -68,9 +68,9 @@ class SkinRepository : SkinRepositoryInterface {
             .map { rowToSkin(it) }
     }
 
-    override suspend fun findByCollectionWithPrice(collectionId: String): List<SkinDTO> = dbQuery {
+    override suspend fun findByCollectionWithPrice(collectionId: String, stattrak: Boolean): List<SkinDTO> = dbQuery {
         // fetch skins for collection
-        val skins = Skins.selectAll().where { Skins.collectionId eq collectionId }
+        val skins = Skins.selectAll().where { (Skins.collectionId eq collectionId) and (Skins.stattrak eq stattrak)}
             .map { rowToSkin(it) }
 
         if (skins.isEmpty()) return@dbQuery emptyList()
@@ -217,7 +217,7 @@ interface SkinRepositoryInterface {
     suspend fun findById(skinId: String): SkinDTO?
     suspend fun findAll(): List<SkinDTO>
     suspend fun findByCollection(collectionId: String): List<SkinDTO>
-    suspend fun findByCollectionWithPrice(collectionId: String): List<SkinDTO>
+    suspend fun findByCollectionWithPrice(collectionId: String, stattrak: Boolean = false): List<SkinDTO>
     suspend fun findByWeapon(weaponId: String): List<SkinDTO>
     suspend fun findByRarity(rarityId: String): List<SkinDTO>
     suspend fun findWithDetails(skinId: String): SkinWithDetails?

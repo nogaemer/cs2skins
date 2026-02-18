@@ -36,6 +36,9 @@ class SeedDB {
         }
     }
 
+    /**
+     * Seeds skins and prices from remote APIs
+     */
     suspend fun seedSkins() = withContext(Dispatchers.IO) {
         skinRepo.deleteAll()
 
@@ -44,12 +47,19 @@ class SeedDB {
         val skinsText = URL(skinsUrl).readText()
         val skins = JSONArray(skinsText)
 
-        val pricesUrl = "https://backend.sih.market/api/v2/items?sortBy=item&appId=730&limit=1000000&offset=0&lang=en"
+        val pricesUrl = "https://backend.sih.market/api/v2/items?sortBy=item&appId=730&limit=10000000&offset=0&lang=en"
         val pricesText = URL(pricesUrl).readText()
         val prices = JSONObject(pricesText).getJSONArray("data")
 
+        val seenSkinNames = mutableSetOf<String>()
+
         for (i in 0 until skins.length()) {
             val skin = skins.getJSONObject(i)
+            val skinName = skin.optString("name", "")
+
+            if (skinName.isNotEmpty() && !seenSkinNames.add(skinName) && !skinName.contains("Doppler")) {
+                println("WARN: Duplicate skin name detected: $skinName")
+            }
 
             val collections = skin.optJSONArray("collections")
             if (collections == null || collections.isEmpty) continue
@@ -70,6 +80,9 @@ class SeedDB {
                 skin.optJSONObject("rarity")?.optString("color", null)?.removePrefix("#")?: continue,
             )
 
+            val stattrak = skin.optBoolean("stattrak", false)
+            val stattrackSkinId = skin.getString("id") + "_stattrak"
+
             skinRepo.create(
                 SkinDTO(
                     skinId = skin.getString("id"),
@@ -81,7 +94,23 @@ class SeedDB {
                     minFloat = if (skin.has("min_float") && !skin.isNull("min_float")) skin.getDouble("min_float") else 0.0,
                     maxFloat = if (skin.has("max_float") && !skin.isNull("max_float")) skin.getDouble("max_float") else 0.0,
                     rarity = rarity,
-                    stattrak = skin.optBoolean("stattrak", false),
+                    stattrak = false,
+                    image = skin.optString("image", null)
+                )
+            )
+
+            skinRepo.create(
+                SkinDTO(
+                    skinId = stattrackSkinId,
+                    collectionId = collectionId,
+                    name = skin.getString("name"),
+                    weapon = weapon,
+                    patternId = skin.optJSONObject("pattern")?.optString("id", null),
+                    patternName = skin.optJSONObject("pattern")?.optString("name", null),
+                    minFloat = if (skin.has("min_float") && !skin.isNull("min_float")) skin.getDouble("min_float") else 0.0,
+                    maxFloat = if (skin.has("max_float") && !skin.isNull("max_float")) skin.getDouble("max_float") else 0.0,
+                    rarity = rarity,
+                    stattrak = true,
                     image = skin.optString("image", null)
                 )
             )
@@ -103,6 +132,17 @@ class SeedDB {
                     SkinPrice(
                         id = 0,
                         skinId = skin.getString("id"),
+                        wear = wearCondition,
+                        price = BigDecimal(price),
+                        quantity = weekSales,
+                    )
+                )
+
+                if (!stattrak) continue
+                priceRepo.create(
+                    SkinPrice(
+                        id = 0,
+                        skinId = stattrackSkinId,
                         wear = wearCondition,
                         price = BigDecimal(price),
                         quantity = weekSales,

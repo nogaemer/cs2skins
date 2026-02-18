@@ -100,7 +100,13 @@ class TradeUpInput(
                                 finalPriceWithDropChange,
                                 finalPrice,
                                 floatA = floatAtLowestPrice,
-                                floatB = ((avgFloat * 10 - tradeUpInputComponentA.amount * (floatAtLowestPrice / tradeUpInputComponentA.skin.floatCapDifference)) * tradeUpInputComponentB.skin.floatCapDifference) / tradeUpInputComponentB.amount
+                                floatB = (
+                                        (avgFloat * 10.0
+                                                - tradeUpInputComponentA.amount * ((floatAtLowestPrice - tradeUpInputComponentA.skin.minFloatCap) / tradeUpInputComponentA.skin.floatCapDifference))
+                                                * tradeUpInputComponentB.skin.floatCapDifference
+                                                + tradeUpInputComponentB.skin.minFloatCap
+                                        ) / tradeUpInputComponentB.amount
+
                             )
                         )
                     }

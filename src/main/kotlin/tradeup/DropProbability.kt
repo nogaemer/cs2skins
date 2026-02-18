@@ -89,8 +89,8 @@ class DropProbability(
         val floatProbabilityPointsPairs: MutableList<FloatProbabilityPointPair> = mutableListOf()
 
         for (float in CSWear.entries) {
-            val minFloat = float.generationMin * skin.floatCapDifference
-            val maxFloat = float.max * skin.floatCapDifference
+            val minFloat = float.generationMin * skin.floatCapDifference + skin.minFloatCap
+            val maxFloat = float.max * skin.floatCapDifference + skin.minFloatCap
             if (maxFloat >= floatRange.min && floatRange.max >= minFloat) {
                 val clampedMin = minFloat.coerceAtLeast(floatRange.min)
                 val clampedMax = maxFloat.coerceAtMost(floatRange.max)

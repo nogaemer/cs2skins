@@ -19,7 +19,7 @@ class ProbabilityTest {
         ),
         "Recoil_Case",
         0.0,
-        1.0
+        0.80339
     )
     val skinB = Skin(
         "B",
@@ -31,8 +31,8 @@ class ProbabilityTest {
             CSWear.BATTLE_SCARRED to 0.09
         ),
         "Recoil_Case",
-        0.0,
-        1.0
+        0.06,
+        0.8
     )
     val tradeUpInputComponentA = TradeUpInputComponent(skinA, 1)
     val tradeUpInputComponentB = TradeUpInputComponent(skinB, 9)
@@ -146,6 +146,30 @@ class ProbabilityTest {
 
         val result = input.calculateBestFloats(0.09)
         assertEquals(0, result.size)
+    }
+
+    @Test
+    fun buildDropProbabilityListMapBProducesEntriesForAllWears() {
+        val dropProbability = DropProbability(tradeUpInputComponentA, tradeUpInputComponentB)
+        val avgFloat = 0.1166665
+
+        val dropProbabilityListMapB: MutableMap<CSWear, List<ProbabilityLinear>> =
+            CSWear.entries.associateWith { wearSkinB ->
+                dropProbability.getFloatProbability(wearSkinB, tradeUpInputComponentB.skin)
+                    .map { pointPair -> dropProbability.probabilityLinear(pointPair) }
+                    .map { it.adjust(avgFloat, tradeUpInputComponentA, tradeUpInputComponentB) }
+                    .toList()
+            }.toMutableMap()
+
+        assertEquals(CSWear.entries.size, dropProbabilityListMapB.size)
+        CSWear.entries.forEach { wear ->
+            assertTrue(dropProbabilityListMapB.containsKey(wear))
+            dropProbabilityListMapB[wear]!!.forEach { linear ->
+                // basic sanity checks on adjusted linear functions
+                assertTrue(linear.m.isFinite())
+                assertTrue(linear.b.isFinite())
+            }
+        }
     }
 
     @Test
