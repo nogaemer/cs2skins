@@ -122,14 +122,7 @@ class TradeUpService(
                         tradeUpOutput
                     )
 
-                    // Check if profitable
-//                    tradeUp.roiWithDropChange > MIN_ROI_THRESHOLD &&
-//                            tradeUp.inputCostWithDropChange < MAX_INPUT_COST &&
-//                            tradeUp.profitWithDropChange > MIN_PROFIT_THRESHOLD &&
-//                            outputFloat < MAX_OUTPUT_FLOAT
-                    if (true) {
-                        tradeUpsToSave.add(tradeUp to (rarityId to rarityId))
-                    }
+                    tradeUpsToSave.add(tradeUp to (rarityId to rarityId))
                 }
             }
         }
@@ -170,23 +163,20 @@ class TradeUpService(
         val profitValue: Double = tradeUp.profitWithDropChange.let { if (it.isFinite()) it else 0.0 }
         val inputCostValue: Double = tradeUp.inputCostWithDropChange.let { if (it.isFinite()) it else 0.0 }
         val outputCostValue: Double = tradeUp.expectedReturn.let { if (it.isFinite()) it else 0.0 }
-        
-        // Insert trade-up result
-        val resultId = TradeUpResults.insert {
-            it[TradeUpResults.collectionAId] = collectionAId
-            it[TradeUpResults.collectionBId] = collectionBId
-            it[TradeUpResults.rarityId] = rarityId
-            it[TradeUpResults.stattrak] = stattrak
-            it[TradeUpResults.outputFloat] = avgFloat
-            it[TradeUpResults.roi] = roiValue
-            it[TradeUpResults.profit] = profitValue
-            it[TradeUpResults.inputCost] = inputCostValue
-            it[TradeUpResults.outputCost] = outputCostValue
-        }[TradeUpResults.id]
+        val now = System.currentTimeMillis()
+
+        // Insert trade-up master definition
+        val masterId = TradeupsMaster.insert {
+            it[TradeupsMaster.collectionAId] = collectionAId
+            it[TradeupsMaster.collectionBId] = collectionBId
+            it[TradeupsMaster.rarityId] = rarityId
+            it[TradeupsMaster.stattrak] = stattrak
+            it[TradeupsMaster.outputFloat] = avgFloat
+        }[TradeupsMaster.id]
 
         // Insert input components
         TradeUpInputs.insert {
-            it[TradeUpInputs.tradeUpResultId] = resultId
+            it[TradeUpInputs.tradeUpResultId] = masterId
             it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentA.skin.skinId
             it[TradeUpInputs.skinName] = tradeUp.input.tradeUpInputComponentA.skin.name
             it[TradeUpInputs.amount] = tradeUp.input.tradeUpInputComponentA.amount
@@ -195,7 +185,7 @@ class TradeUpService(
         }
 
         TradeUpInputs.insert {
-            it[TradeUpInputs.tradeUpResultId] = resultId
+            it[TradeUpInputs.tradeUpResultId] = masterId
             it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentB.skin.skinId
             it[TradeUpInputs.skinName] = tradeUp.input.tradeUpInputComponentB.skin.name
             it[TradeUpInputs.amount] = tradeUp.input.tradeUpInputComponentB.amount
@@ -204,23 +194,20 @@ class TradeUpService(
         }
 
         // Insert output skins with probabilities
-        // Group outputs by collection to calculate correct per-skin probabilities
         val outputsByCollection = tradeUp.output.skins.groupBy { it.collectionId }
         
         tradeUp.output.skins.forEach { outputSkin ->
-            // Calculate drop probability based on collection
             val ballotsFromA = if (tradeUp.input.tradeUpInputComponentA.collectionId == outputSkin.collectionId) 
                 tradeUp.input.tradeUpInputComponentA.amount else 0
             val ballotsFromB = if (tradeUp.input.tradeUpInputComponentB.collectionId == outputSkin.collectionId) 
                 tradeUp.input.tradeUpInputComponentB.amount else 0
             val totalBallotsForCollection = ballotsFromA + ballotsFromB
             
-            // Probability = (ballots for this collection / 10) / (number of skins in this collection)
             val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
             val probability = (totalBallotsForCollection.toDouble() / 10.0) / skinsInCollection.toDouble()
             
             TradeUpOutputs.insert {
-                it[TradeUpOutputs.tradeUpResultId] = resultId
+                it[TradeUpOutputs.tradeUpResultId] = masterId
                 it[TradeUpOutputs.skinId] = outputSkin.skinId
                 it[TradeUpOutputs.skinName] = outputSkin.name
                 it[TradeUpOutputs.probability] = probability
@@ -228,16 +215,45 @@ class TradeUpService(
                 it[TradeUpOutputs.price] = BigDecimal(outputSkin.price.values.firstOrNull() ?: 0.0)
             }
         }
+
+        // Append a time-series snapshot
+        TradeupSnapshots.insert {
+            it[TradeupSnapshots.tradeupId] = masterId
+            it[TradeupSnapshots.snapshotTime] = now
+            it[TradeupSnapshots.roi] = roiValue
+            it[TradeupSnapshots.profit] = profitValue
+            it[TradeupSnapshots.inputCost] = inputCostValue
+            it[TradeupSnapshots.outputCost] = outputCostValue
+        }
+
+        // Upsert the latest metrics into tradeups_current using ON CONFLICT (tradeupId)
+        TradeupsCurrent.upsert(
+            keys = arrayOf(TradeupsCurrent.tradeupId)
+        ) {
+            it[TradeupsCurrent.tradeupId] = masterId
+            it[TradeupsCurrent.roi] = roiValue
+            it[TradeupsCurrent.profit] = profitValue
+            it[TradeupsCurrent.inputCost] = inputCostValue
+            it[TradeupsCurrent.outputCost] = outputCostValue
+            it[TradeupsCurrent.updatedAt] = now
+        }
     }
 
     suspend fun getAllTradeUps(): List<TradeUpResultResponse> = dbQuery {
-        val results = TradeUpResults.selectAll().toList()
+        val results = TradeupsMaster
+            .join(TradeupsCurrent, JoinType.LEFT,
+                additionalConstraint = { TradeupsMaster.id eq TradeupsCurrent.tradeupId })
+            .selectAll()
+            .toList()
         mapToTradeUpResponsesBulk(results)
     }
 
     suspend fun getTradeUpById(id: Int): TradeUpResultResponse? = dbQuery {
-        val results = TradeUpResults.selectAll()
-            .where { TradeUpResults.id eq id }
+        val results = TradeupsMaster
+            .join(TradeupsCurrent, JoinType.LEFT,
+                additionalConstraint = { TradeupsMaster.id eq TradeupsCurrent.tradeupId })
+            .selectAll()
+            .where { TradeupsMaster.id eq id }
             .toList()
         
         if (results.isEmpty()) null
@@ -245,53 +261,56 @@ class TradeUpService(
     }
 
     suspend fun filterTradeUps(filter: TradeUpFilterRequest): PageResponse<TradeUpResultResponse> = dbQuery {
-        var query = TradeUpResults.selectAll()
+        var query = TradeupsMaster
+            .join(TradeupsCurrent, JoinType.LEFT,
+                additionalConstraint = { TradeupsMaster.id eq TradeupsCurrent.tradeupId })
+            .selectAll()
 
         filter.minRoi?.let { minRoi ->
-            query = query.andWhere { TradeUpResults.roi greaterEq minRoi }
+            query = query.andWhere { TradeupsCurrent.roi greaterEq minRoi }
         }
 
         filter.maxRoi?.let { maxRoi ->
-            query = query.andWhere { TradeUpResults.roi lessEq maxRoi }
+            query = query.andWhere { TradeupsCurrent.roi lessEq maxRoi }
         }
 
         filter.minProfit?.let { minProfit ->
-            query = query.andWhere { TradeUpResults.profit greaterEq minProfit }
+            query = query.andWhere { TradeupsCurrent.profit greaterEq minProfit }
         }
 
         filter.maxProfit?.let { maxProfit ->
-            query = query.andWhere { TradeUpResults.profit lessEq maxProfit }
+            query = query.andWhere { TradeupsCurrent.profit lessEq maxProfit }
         }
 
         filter.stattrak?.let { stattrak ->
-            query = query.andWhere { TradeUpResults.stattrak eq stattrak }
+            query = query.andWhere { TradeupsMaster.stattrak eq stattrak }
         }
 
         filter.rarityId?.let { rarityId ->
-            query = query.andWhere { TradeUpResults.rarityId eq rarityId }
+            query = query.andWhere { TradeupsMaster.rarityId eq rarityId }
         }
 
         // Apply sorting
         query = when (filter.sortBy.lowercase()) {
             "profit" -> if (filter.sortDirection.lowercase() == "asc") {
-                query.orderBy(TradeUpResults.profit to SortOrder.ASC)
+                query.orderBy(TradeupsCurrent.profit to SortOrder.ASC)
             } else {
-                query.orderBy(TradeUpResults.profit to SortOrder.DESC)
+                query.orderBy(TradeupsCurrent.profit to SortOrder.DESC)
             }
             "inputcost" -> if (filter.sortDirection.lowercase() == "asc") {
-                query.orderBy(TradeUpResults.inputCost to SortOrder.ASC)
+                query.orderBy(TradeupsCurrent.inputCost to SortOrder.ASC)
             } else {
-                query.orderBy(TradeUpResults.inputCost to SortOrder.DESC)
+                query.orderBy(TradeupsCurrent.inputCost to SortOrder.DESC)
             }
-            "createdat" -> if (filter.sortDirection.lowercase() == "asc") {
-                query.orderBy(TradeUpResults.createdAt to SortOrder.ASC)
+            "updatedat" -> if (filter.sortDirection.lowercase() == "asc") {
+                query.orderBy(TradeupsCurrent.updatedAt to SortOrder.ASC)
             } else {
-                query.orderBy(TradeUpResults.createdAt to SortOrder.DESC)
+                query.orderBy(TradeupsCurrent.updatedAt to SortOrder.DESC)
             }
             else -> if (filter.sortDirection.lowercase() == "asc") {
-                query.orderBy(TradeUpResults.roi to SortOrder.ASC)
+                query.orderBy(TradeupsCurrent.roi to SortOrder.ASC)
             } else {
-                query.orderBy(TradeUpResults.roi to SortOrder.DESC)
+                query.orderBy(TradeupsCurrent.roi to SortOrder.DESC)
             }
         }
 
@@ -322,16 +341,59 @@ class TradeUpService(
     }
 
     suspend fun deleteAllTradeUps(): Int = dbQuery {
-        TradeUpResults.deleteAll()
+        val deletedSnapshots = TradeupSnapshots.deleteAll()
+        val deletedCurrent = TradeupsCurrent.deleteAll()
+        val deletedOutputs = TradeUpOutputs.deleteAll()
+        val deletedInputs = TradeUpInputs.deleteAll()
+        val deletedMaster = TradeupsMaster.deleteAll()
+        deletedSnapshots + deletedCurrent + deletedOutputs + deletedInputs + deletedMaster
     }
 
     /**
-     * Bulk mapping function that eliminates N+1 queries by fetching all related data in batches
+     * Returns aggregated time-series history for a specific trade-up.
+     * Rows are fetched with the time filter pushed to the DB, then grouped
+     * into buckets in-process. The time window is bounded by the [maxPoints]
+     * parameter in the controller, keeping memory use manageable.
+     *
+     * @param tradeupId  the trade-up master record id
+     * @param fromMs     start of time range (epoch milliseconds, inclusive)
+     * @param toMs       end of time range (epoch milliseconds, inclusive)
+     * @param bucketMs   bucket width in milliseconds (e.g. 86400000 for daily, 604800000 for weekly)
+     */
+    suspend fun getTradeupHistory(
+        tradeupId: Int,
+        fromMs: Long,
+        toMs: Long,
+        bucketMs: Long = 86_400_000L
+    ): List<TradeUpHistoryPoint> = dbQuery {
+        TradeupSnapshots.selectAll()
+            .where {
+                (TradeupSnapshots.tradeupId eq tradeupId) and
+                (TradeupSnapshots.snapshotTime greaterEq fromMs) and
+                (TradeupSnapshots.snapshotTime lessEq toMs)
+            }
+            .orderBy(TradeupSnapshots.snapshotTime to SortOrder.ASC)
+            .toList()
+            .groupBy { row -> (row[TradeupSnapshots.snapshotTime] / bucketMs) * bucketMs }
+            .map { (bucketStart, rows) ->
+                TradeUpHistoryPoint(
+                    bucketStart = bucketStart,
+                    roi = rows.map { it[TradeupSnapshots.roi] }.takeIf { it.isNotEmpty() }?.average() ?: 0.0,
+                    profit = rows.map { it[TradeupSnapshots.profit] }.takeIf { it.isNotEmpty() }?.average() ?: 0.0,
+                    inputCost = rows.map { it[TradeupSnapshots.inputCost] }.takeIf { it.isNotEmpty() }?.average() ?: 0.0,
+                    outputCost = rows.map { it[TradeupSnapshots.outputCost] }.takeIf { it.isNotEmpty() }?.average() ?: 0.0
+                )
+            }
+    }
+
+    /**
+     * Bulk mapping function that eliminates N+1 queries by fetching all related data in batches.
+     * Input rows must come from a join of TradeupsMaster + TradeupsCurrent.
      */
     private fun mapToTradeUpResponsesBulk(results: List<ResultRow>): List<TradeUpResultResponse> {
         if (results.isEmpty()) return emptyList()
         
-        val resultIds = results.map { it[TradeUpResults.id] }
+        val resultIds = results.map { it[TradeupsMaster.id] }
         
         // Fetch all inputs in one query
         val inputsByResultId = TradeUpInputs.selectAll()
@@ -363,7 +425,7 @@ class TradeUpService(
         
         // Fetch all unique collections in one query
         val collectionIds = results.flatMap { 
-            listOf(it[TradeUpResults.collectionAId], it[TradeUpResults.collectionBId]) 
+            listOf(it[TradeupsMaster.collectionAId], it[TradeupsMaster.collectionBId]) 
         }.distinct()
         
         val collectionsById = Collections.selectAll()
@@ -376,7 +438,7 @@ class TradeUpService(
             }
         
         // Fetch all unique rarities in one query
-        val rarityIds = results.mapNotNull { it[TradeUpResults.rarityId] }.distinct()
+        val rarityIds = results.mapNotNull { it[TradeupsMaster.rarityId] }.distinct()
         val raritiesById = if (rarityIds.isNotEmpty()) {
             Rarities.selectAll()
                 .where { Rarities.rarityId inList rarityIds }
@@ -393,10 +455,10 @@ class TradeUpService(
         
         // Now map each result using the pre-fetched data
         return results.map { row ->
-            val resultId = row[TradeUpResults.id]
-            val collectionAId = row[TradeUpResults.collectionAId]
-            val collectionBId = row[TradeUpResults.collectionBId]
-            val rarityId = row[TradeUpResults.rarityId]
+            val resultId = row[TradeupsMaster.id]
+            val collectionAId = row[TradeupsMaster.collectionAId]
+            val collectionBId = row[TradeupsMaster.collectionBId]
+            val rarityId = row[TradeupsMaster.rarityId]
             
             TradeUpResultResponse(
                 id = resultId,
@@ -405,84 +467,17 @@ class TradeUpService(
                 collectionB = collectionsById[collectionBId] 
                     ?: CollectionInfo(collectionBId, collectionBId),
                 rarity = rarityId?.let { raritiesById[it] },
-                stattrak = row[TradeUpResults.stattrak],
-                outputFloat = row[TradeUpResults.outputFloat],
-                roi = row[TradeUpResults.roi],
-                profit = row[TradeUpResults.profit],
-                inputCost = row[TradeUpResults.inputCost],
-                outputCost = row[TradeUpResults.outputCost],
+                stattrak = row[TradeupsMaster.stattrak],
+                outputFloat = row[TradeupsMaster.outputFloat],
+                roi = row.getOrNull(TradeupsCurrent.roi) ?: 0.0,
+                profit = row.getOrNull(TradeupsCurrent.profit) ?: 0.0,
+                inputCost = row.getOrNull(TradeupsCurrent.inputCost) ?: 0.0,
+                outputCost = row.getOrNull(TradeupsCurrent.outputCost) ?: 0.0,
                 inputs = inputsByResultId[resultId] ?: emptyList(),
                 outputs = outputsByResultId[resultId] ?: emptyList(),
-                createdAt = row[TradeUpResults.createdAt]
+                createdAt = row[TradeupsMaster.createdAt]
             )
         }
     }
-
-    private fun mapToTradeUpResponse(row: ResultRow): TradeUpResultResponse {
-        val resultId = row[TradeUpResults.id]
-        
-        // Fetch inputs
-        val inputs = TradeUpInputs.selectAll()
-            .where { TradeUpInputs.tradeUpResultId eq resultId }
-            .map {
-                TradeUpInputInfo(
-                    skinId = it[TradeUpInputs.skinId],
-                    skinName = it[TradeUpInputs.skinName],
-                    amount = it[TradeUpInputs.amount],
-                    floatValue = it[TradeUpInputs.floatValue],
-                    pricePerUnit = it[TradeUpInputs.pricePerUnit]
-                )
-            }
-
-        // Fetch outputs
-        val outputs = TradeUpOutputs.selectAll()
-            .where { TradeUpOutputs.tradeUpResultId eq resultId }
-            .map {
-                TradeUpOutputInfo(
-                    skinId = it[TradeUpOutputs.skinId],
-                    skinName = it[TradeUpOutputs.skinName],
-                    probability = it[TradeUpOutputs.probability],
-                    floatValue = it[TradeUpOutputs.floatValue],
-                    price = it[TradeUpOutputs.price]
-                )
-            }
-
-        // Fetch collection and rarity info
-        val collectionAId = row[TradeUpResults.collectionAId]
-        val collectionBId = row[TradeUpResults.collectionBId]
-        val rarityId = row[TradeUpResults.rarityId]
-
-        val collectionA = Collections.selectAll()
-            .where { Collections.collectionId eq collectionAId }
-            .map { CollectionInfo(it[Collections.collectionId], it[Collections.name]) }
-            .firstOrNull() ?: CollectionInfo(collectionAId, collectionAId)
-
-        val collectionB = Collections.selectAll()
-            .where { Collections.collectionId eq collectionBId }
-            .map { CollectionInfo(it[Collections.collectionId], it[Collections.name]) }
-            .firstOrNull() ?: CollectionInfo(collectionBId, collectionBId)
-
-        val rarity = rarityId?.let {
-            Rarities.selectAll()
-                .where { Rarities.rarityId eq it }
-                .map { RarityInfo(it[Rarities.rarityId], it[Rarities.name], it[Rarities.colorHex]) }
-                .firstOrNull()
-        }
-
-        return TradeUpResultResponse(
-            id = resultId,
-            collectionA = collectionA,
-            collectionB = collectionB,
-            rarity = rarity,
-            stattrak = row[TradeUpResults.stattrak],
-            outputFloat = row[TradeUpResults.outputFloat],
-            roi = row[TradeUpResults.roi],
-            profit = row[TradeUpResults.profit],
-            inputCost = row[TradeUpResults.inputCost],
-            outputCost = row[TradeUpResults.outputCost],
-            inputs = inputs,
-            outputs = outputs,
-            createdAt = row[TradeUpResults.createdAt]
-        )
-    }
 }
+

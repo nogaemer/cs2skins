@@ -10,7 +10,8 @@ import java.math.BigDecimal
 
 @Service
 class SkinService(
-    private val skinRepository: SkinRepository = SkinRepository()
+    private val skinRepository: SkinRepository = SkinRepository(),
+    private val skinPriceRepository: SkinPriceRepository = SkinPriceRepository()
 ) {
 
     suspend fun getAllSkins(): List<SkinResponse> = withContext(Dispatchers.IO) {
@@ -66,6 +67,32 @@ class SkinService(
         skins.map { mapToSkinResponse(it) }
     }
 
+    /**
+     * Returns raw price history points for a skin+wear combination, filtered by an optional time range.
+     *
+     * @param skinId  the skin identifier
+     * @param wearId  the wear condition identifier
+     * @param fromMs  start of time range (epoch milliseconds), or null for all history
+     * @param toMs    end of time range (epoch milliseconds), or null for all history
+     */
+    suspend fun getSkinPriceHistory(
+        skinId: String,
+        wearId: String,
+        fromMs: Long? = null,
+        toMs: Long? = null
+    ): List<SkinPriceHistoryResponse> = withContext(Dispatchers.IO) {
+        skinPriceRepository.findHistory(skinId, wearId, fromMs, toMs)
+            .map { point ->
+                SkinPriceHistoryResponse(
+                    skinId = point.skinId,
+                    wearId = point.wearId,
+                    recordedAt = point.recordedAt,
+                    price = point.price,
+                    quantity = point.quantity
+                )
+            }
+    }
+
     private fun mapToSkinResponse(skin: SkinDTO): SkinResponse {
         return SkinResponse(
             skinId = skin.skinId,
@@ -86,3 +113,4 @@ class SkinService(
         )
     }
 }
+

@@ -130,7 +130,6 @@ class SeedDB {
 
                 priceRepo.create(
                     SkinPrice(
-                        id = 0,
                         skinId = skin.getString("id"),
                         wear = wearCondition,
                         price = BigDecimal(price),
@@ -141,7 +140,6 @@ class SeedDB {
                 if (!stattrak) continue
                 priceRepo.create(
                     SkinPrice(
-                        id = 0,
                         skinId = stattrackSkinId,
                         wear = wearCondition,
                         price = BigDecimal(price),
