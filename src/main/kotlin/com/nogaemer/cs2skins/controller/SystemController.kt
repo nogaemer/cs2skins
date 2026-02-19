@@ -1,9 +1,7 @@
 package com.nogaemer.cs2skins.controller
 
 import com.nogaemer.cs2skins.dto.JobStatusResponse
-import com.nogaemer.cs2skins.service.SeedService
-import com.nogaemer.cs2skins.service.TradeUpService
-import kotlinx.coroutines.*
+import com.nogaemer.cs2skins.service.AsyncJobService
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import java.util.concurrent.atomic.AtomicBoolean
@@ -11,8 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 @RestController
 @RequestMapping("/api/system")
 class SystemController(
-    private val seedService: SeedService,
-    private val tradeUpService: TradeUpService
+    private val asyncJobService: AsyncJobService
 ) {
 
     private val seedJobRunning = AtomicBoolean(false)
@@ -24,13 +21,13 @@ class SystemController(
             return ResponseEntity.ok(JobStatusResponse("running", "Seed job is already running"))
         }
 
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                seedService.seedCollections()
-            } finally {
+        asyncJobService.seedCollectionsAsync()
+            .whenComplete { _, error ->
                 seedJobRunning.set(false)
+                error?.let { 
+                    // Exception already logged in AsyncJobService
+                }
             }
-        }
 
         return ResponseEntity.ok(JobStatusResponse("started", "Collection seed job started"))
     }
@@ -41,13 +38,13 @@ class SystemController(
             return ResponseEntity.ok(JobStatusResponse("running", "Seed job is already running"))
         }
 
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                seedService.seedSkins()
-            } finally {
+        asyncJobService.seedSkinsAsync()
+            .whenComplete { _, error ->
                 seedJobRunning.set(false)
+                error?.let { 
+                    // Exception already logged in AsyncJobService
+                }
             }
-        }
 
         return ResponseEntity.ok(JobStatusResponse("started", "Skins seed job started"))
     }
@@ -58,13 +55,13 @@ class SystemController(
             return ResponseEntity.ok(JobStatusResponse("running", "Seed job is already running"))
         }
 
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                seedService.seedAll()
-            } finally {
+        asyncJobService.seedAllAsync()
+            .whenComplete { _, error ->
                 seedJobRunning.set(false)
+                error?.let { 
+                    // Exception already logged in AsyncJobService
+                }
             }
-        }
 
         return ResponseEntity.ok(JobStatusResponse("started", "Full seed job started (collections + skins)"))
     }
@@ -77,13 +74,13 @@ class SystemController(
             return ResponseEntity.ok(JobStatusResponse("running", "Calculate job is already running"))
         }
 
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                tradeUpService.calculateAndSaveTradeUps(stattrak)
-            } finally {
+        asyncJobService.calculateTradeUpsAsync(stattrak)
+            .whenComplete { _, error ->
                 calculateJobRunning.set(false)
+                error?.let { 
+                    // Exception already logged in AsyncJobService
+                }
             }
-        }
 
         return ResponseEntity.ok(JobStatusResponse("started", "Trade-up calculation job started"))
     }
@@ -94,16 +91,13 @@ class SystemController(
             return ResponseEntity.ok(JobStatusResponse("running", "Calculate job is already running"))
         }
 
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                // Calculate for non-stattrak
-                tradeUpService.calculateAndSaveTradeUps(false)
-                // Calculate for stattrak
-                tradeUpService.calculateAndSaveTradeUps(true)
-            } finally {
+        asyncJobService.calculateAllTradeUpsAsync()
+            .whenComplete { _, error ->
                 calculateJobRunning.set(false)
+                error?.let { 
+                    // Exception already logged in AsyncJobService
+                }
             }
-        }
 
         return ResponseEntity.ok(JobStatusResponse("started", "Full trade-up calculation job started (non-stattrak + stattrak)"))
     }
