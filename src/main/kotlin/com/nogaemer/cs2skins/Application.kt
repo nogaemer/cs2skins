@@ -10,7 +10,7 @@ import org.springframework.cache.annotation.EnableCaching
 import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
 
-@SpringBootApplication(scanBasePackages = ["com.nogaemer.cs2skins", "database"])
+@SpringBootApplication(scanBasePackages = ["com.nogaemer.cs2skins", "database", "tradeup"])
 @EnableCaching
 class Application
 

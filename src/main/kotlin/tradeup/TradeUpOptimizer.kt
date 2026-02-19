@@ -4,7 +4,6 @@ import database.Collection
 import database.CollectionRepository
 import database.SkinDTO
 import database.SkinRepository
-import kotlinx.coroutines.runBlocking
 import models.CSWear
 import models.CollectionWithSkins
 import models.Skin
@@ -18,8 +17,8 @@ class TradeUpOptimizer(
 
     private val logger = LoggerFactory.getLogger(TradeUpOptimizer::class.java)
 
-    fun optimizeAll() {
-        val collections = runBlocking { collectionRepository.findAll() }
+    suspend fun optimizeAll() {
+        val collections = collectionRepository.findAll()
 
         //none-stattrak
         for (i in collections.indices) {
@@ -213,8 +212,8 @@ class TradeUpOptimizer(
         )
     }
 
-    fun getCollectionWithSkins(collection: Collection, stattrak: Boolean = false): CollectionWithSkins {
-        val skinsOfCollectionA = runBlocking { SkinRepository().findByCollectionWithPrice(collection.collectionId, stattrak) }
+    suspend fun getCollectionWithSkins(collection: Collection, stattrak: Boolean = false): CollectionWithSkins {
+        val skinsOfCollectionA = SkinRepository().findByCollectionWithPrice(collection.collectionId, stattrak)
         val skinsByRarity: MutableMap<String, MutableList<SkinDTO>> = mutableMapOf()
 
         skinsOfCollectionA.forEach { skin ->
