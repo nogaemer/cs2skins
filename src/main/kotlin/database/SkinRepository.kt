@@ -100,6 +100,55 @@ class SkinRepository : SkinRepositoryInterface {
         }
     }
 
+    suspend fun findWithFiltersAndPrices(
+        weaponId: String? = null,
+        rarityId: String? = null,
+        collectionId: String? = null,
+        stattrak: Boolean? = null,
+        searchTerm: String? = null
+    ): List<SkinDTO> = dbQuery {
+        // Build query with filters
+        var query = Skins.selectAll()
+        
+        weaponId?.let { query = query.andWhere { Skins.weaponId eq it } }
+        rarityId?.let { query = query.andWhere { Skins.rarityId eq it } }
+        collectionId?.let { query = query.andWhere { Skins.collectionId eq it } }
+        stattrak?.let { query = query.andWhere { Skins.stattrak eq it } }
+        searchTerm?.let { term ->
+            query = query.andWhere { 
+                (Skins.name like "%$term%") or (Skins.patternName like "%$term%")
+            }
+        }
+        
+        val skins = query.map { rowToSkin(it) }
+        
+        if (skins.isEmpty()) return@dbQuery emptyList()
+
+        // Fetch all prices for filtered skins
+        val skinIds = skins.map { it.skinId }
+        val pricesBySkin = SkinPrices.selectAll().where { SkinPrices.skinId inList skinIds }
+            .mapNotNull { r ->
+                val wear = CSWear.fromId(r[SkinPrices.wearId]) ?: return@mapNotNull null
+                val skinPrice = SkinPrice(
+                    r[SkinPrices.id],
+                    r[SkinPrices.skinId],
+                    WearCondition(r[SkinPrices.wearId], ""),
+                    r[SkinPrices.price],
+                    r[SkinPrices.quantity]
+                )
+                r[SkinPrices.skinId] to (wear to skinPrice)
+            }
+            .groupBy({ it.first }, { it.second })
+            .mapValues { entry ->
+                entry.value.associate { it.first to it.second }.toMutableMap()
+            }
+
+        skins.map { skin ->
+            val latest = pricesBySkin[skin.skinId]
+            if (!latest.isNullOrEmpty()) skin.copy(price = latest) else skin
+        }
+    }
+
     override suspend fun findByWeapon(weaponId: String): List<SkinDTO> = dbQuery {
         Skins.selectAll().where { Skins.weaponId eq weaponId }
             .map { rowToSkin(it) }

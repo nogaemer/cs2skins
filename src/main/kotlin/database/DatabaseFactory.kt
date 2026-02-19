@@ -9,7 +9,7 @@ import org.jetbrains.exposed.sql.transactions.transaction
 object DatabaseFactory {
     fun init() {
         val config = HikariConfig().apply {
-            jdbcUrl = "jdbc:mysql://localhost:3306/skins_schema?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true"
+            jdbcUrl = "jdbc:mysql://localhost:3306/test?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true"
             driverClassName = "com.mysql.cj.jdbc.Driver"
             username = "root"
             password = "(y6x2N;Z@1H="

@@ -10,6 +10,7 @@ import tradeup.*
 class ProbabilityTest {
     val skinA = Skin(
         "A",
+        "A",
         mutableMapOf(
             CSWear.FACTORY_NEW to 1.84,
             CSWear.MINIMAL_WEAR to 0.38,
@@ -22,6 +23,7 @@ class ProbabilityTest {
         0.80339
     )
     val skinB = Skin(
+        "B",
         "B",
         mutableMapOf(
             CSWear.FACTORY_NEW to 1.84,
@@ -195,6 +197,7 @@ class ProbabilityTest {
         val skinsA = mutableListOf<Skin>(
             Skin(
                 "Nova Rising Skull",
+                "Nova Rising Skull",
                 mutableMapOf(
                     CSWear.FACTORY_NEW to 8.55,
                     CSWear.MINIMAL_WEAR to 5.98,
@@ -209,6 +212,7 @@ class ProbabilityTest {
         )
         val skinsB = mutableListOf<Skin>(
             Skin(
+                "Nova Rising Skull",
                 "Nova Rising Skull",
                 mutableMapOf(
                     CSWear.FACTORY_NEW to 8.55,
@@ -225,6 +229,7 @@ class ProbabilityTest {
         val outputSkins = mutableListOf<Skin>(
             Skin(
                 "AWP Redline",
+                "AWP Redline",
                 mutableMapOf(
                     CSWear.MINIMAL_WEAR to 93.62,
                     CSWear.FIELD_TESTED to 48.50,
@@ -235,6 +240,7 @@ class ProbabilityTest {
                 0.4
             ),
             Skin(
+                "M4A1-S Guardian",
                 "M4A1-S Guardian",
                 mutableMapOf(
                     CSWear.FACTORY_NEW to 57.16,
@@ -248,6 +254,7 @@ class ProbabilityTest {
                 0.5
             ),
             Skin(
+                "P250 Mehndi",
                 "P250 Mehndi",
                 mutableMapOf(
                     CSWear.FACTORY_NEW to 30.81,
