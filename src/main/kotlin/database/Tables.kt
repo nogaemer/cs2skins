@@ -29,7 +29,6 @@ object Rarities : Table("rarities") {
     override val primaryKey = PrimaryKey(rarityId)
 }
 
-
 object WearConditions : Table("wear_conditions") {
     val wearId = varchar("wear_id", 255)
     val name = varchar("name", 100)
@@ -65,24 +64,55 @@ object Skins : Table("skins") {
     }
 }
 
-object SkinPrices : Table("skin_prices") {
-    val id = integer("id").autoIncrement()
+/**
+ * Current price snapshot per skin+wear (latest known price).
+ * This is the primary table for read queries that need the most recent price.
+ */
+object SkinPricesCurrent : Table("skin_prices_current") {
     val skinId = varchar("skin_id", 255)
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val wearId = varchar("wear_id", 255)
         .references(WearConditions.wearId, onDelete = ReferenceOption.RESTRICT, onUpdate = ReferenceOption.CASCADE)
     val price = decimal("price", 10, 2).default(java.math.BigDecimal.ZERO)
     val quantity = integer("quantity").default(0)
+    val updatedAt = long("updated_at").clientDefault { System.currentTimeMillis() }
 
-    override val primaryKey = PrimaryKey(id)
+    override val primaryKey = PrimaryKey(skinId, wearId)
 
     init {
-        index("idx_prices_skin", false, skinId)
-        index("idx_prices_wear", false, wearId)
+        index("idx_spc_wear", false, wearId)
     }
 }
 
-object TradeUpResults : Table("tradeup_results") {
+/**
+ * Historical price records per skin+wear (TimescaleDB hypertable on recorded_at).
+ * Partitioned by week; stores one row per price snapshot event.
+ * The recorded_at column holds epoch-milliseconds (BIGINT).
+ */
+object SkinPriceHistory : Table("skin_price_history") {
+    val skinId = varchar("skin_id", 255)
+        .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val wearId = varchar("wear_id", 255)
+        .references(WearConditions.wearId, onDelete = ReferenceOption.RESTRICT, onUpdate = ReferenceOption.CASCADE)
+    val recordedAt = long("recorded_at")
+    val price = decimal("price", 10, 2).default(java.math.BigDecimal.ZERO)
+    val quantity = integer("quantity").default(0)
+
+    // Composite primary key required for TimescaleDB hypertable
+    override val primaryKey = PrimaryKey(skinId, wearId, recordedAt)
+
+    init {
+        index("idx_sph_skin_wear", false, skinId, wearId)
+    }
+}
+
+/**
+ * Static trade-up definition (master record).
+ * Represents a unique trade-up configuration: two collections, a rarity tier,
+ * whether it is StatTrak, and the target output float.
+ * Metrics (ROI, profit, etc.) live in TradeupsCurrent and TradeupSnapshots.
+ */
+object TradeupsMaster : Table("tradeups_master") {
     val id = integer("id").autoIncrement()
     val collectionAId = varchar("collection_a_id", 255)
         .references(Collections.collectionId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
@@ -93,38 +123,64 @@ object TradeUpResults : Table("tradeup_results") {
         .nullable()
     val stattrak = bool("stattrak").default(false)
     val outputFloat = double("output_float")
-    val roi = double("roi")
-    val profit = double("profit")
-    val inputCost = double("input_cost")
-    val outputCost = double("output_cost")
     val createdAt = long("created_at").clientDefault { System.currentTimeMillis() }
 
     override val primaryKey = PrimaryKey(id)
 
     init {
-        // Single column indexes for common filters
-        index("idx_tradeup_roi", false, roi)
-        index("idx_tradeup_profit", false, profit)
-        index("idx_tradeup_stattrak", false, stattrak)
-        index("idx_tradeup_created", false, createdAt)
-        
-        // Composite indexes for common query patterns
-        index("idx_tradeup_stattrak_roi", false, stattrak, roi)
-        index("idx_tradeup_stattrak_profit", false, stattrak, profit)
-        index("idx_tradeup_rarity_roi", false, rarityId, roi)
-        
-        // Covering index for collection lookups with sorting
-        index("idx_tradeup_collections_roi", false, collectionAId, collectionBId, roi)
+        index("idx_tm_stattrak", false, stattrak)
+        index("idx_tm_rarity", false, rarityId)
+        index("idx_tm_collections", false, collectionAId, collectionBId)
     }
+}
+
+/**
+ * Latest computed metrics for each trade-up master record.
+ * Updated (UPSERT) whenever a new snapshot is calculated.
+ * Use this table for fast filtering and sorting of trade-ups.
+ */
+object TradeupsCurrent : Table("tradeups_current") {
+    val tradeupId = integer("tradeup_id")
+        .references(TradeupsMaster.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val roi = double("roi")
+    val profit = double("profit")
+    val inputCost = double("input_cost")
+    val outputCost = double("output_cost")
+    val updatedAt = long("updated_at").clientDefault { System.currentTimeMillis() }
+
+    override val primaryKey = PrimaryKey(tradeupId)
+
+    init {
+        index("idx_tc_roi", false, roi)
+        index("idx_tc_profit", false, profit)
+        index("idx_tc_roi_profit", false, roi, profit)
+    }
+}
+
+/**
+ * Time-series snapshots of trade-up metrics (TimescaleDB hypertable on snapshot_time).
+ * One row per calculation event. Partitioned by week (chunk_time_interval = 604800000 ms).
+ */
+object TradeupSnapshots : Table("tradeup_snapshots") {
+    val tradeupId = integer("tradeup_id")
+        .references(TradeupsMaster.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val snapshotTime = long("snapshot_time")
+    val roi = double("roi")
+    val profit = double("profit")
+    val inputCost = double("input_cost")
+    val outputCost = double("output_cost")
+
+    // Composite primary key required for TimescaleDB hypertable
+    override val primaryKey = PrimaryKey(tradeupId, snapshotTime)
 }
 
 object TradeUpInputs : Table("tradeup_inputs") {
     val id = integer("id").autoIncrement()
     val tradeUpResultId = integer("tradeup_result_id")
-        .references(TradeUpResults.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+        .references(TradeupsMaster.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val skinId = varchar("skin_id", 255)
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
-    val skinName = varchar("skin_name", 255) // Store name for display purposes
+    val skinName = varchar("skin_name", 255)
     val amount = integer("amount")
     val floatValue = double("float_value")
     val pricePerUnit = decimal("price_per_unit", 10, 2)
@@ -139,10 +195,10 @@ object TradeUpInputs : Table("tradeup_inputs") {
 object TradeUpOutputs : Table("tradeup_outputs") {
     val id = integer("id").autoIncrement()
     val tradeUpResultId = integer("tradeup_result_id")
-        .references(TradeUpResults.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+        .references(TradeupsMaster.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val skinId = varchar("skin_id", 255)
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
-    val skinName = varchar("skin_name", 255) // Store name for display purposes
+    val skinName = varchar("skin_name", 255)
     val probability = double("probability")
     val floatValue = double("float_value")
     val price = decimal("price", 10, 2)
@@ -193,13 +249,11 @@ data class SkinDTO(
 )
 
 data class SkinPrice(
-    val id: Int,
     val skinId: String,
     val wear: WearCondition,
     val price: BigDecimal,
     val quantity: Int
 )
-
 
 // Skin with full details
 data class SkinWithDetails(
@@ -214,6 +268,4 @@ data class PriceWithWear(
     val skinPrice: SkinPrice,
     val wearConditionName: String
 )
-
-
 

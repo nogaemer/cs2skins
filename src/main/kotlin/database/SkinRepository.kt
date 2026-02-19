@@ -77,17 +77,16 @@ class SkinRepository : SkinRepositoryInterface {
 
         // fetch all prices for these skins in a single query to avoid N+1
         val skinIds = skins.map { it.skinId }
-        val pricesBySkin = SkinPrices.selectAll().where { SkinPrices.skinId inList skinIds }
+        val pricesBySkin = SkinPricesCurrent.selectAll().where { SkinPricesCurrent.skinId inList skinIds }
             .mapNotNull { r ->
-                val wear = CSWear.fromId(r[SkinPrices.wearId]) ?: return@mapNotNull null
+                val wear = CSWear.fromId(r[SkinPricesCurrent.wearId]) ?: return@mapNotNull null
                 val skinPrice = SkinPrice(
-                    r[SkinPrices.id],
-                    r[SkinPrices.skinId],
-                    WearCondition(r[SkinPrices.wearId], ""),
-                    r[SkinPrices.price],
-                    r[SkinPrices.quantity]
+                    r[SkinPricesCurrent.skinId],
+                    WearCondition(r[SkinPricesCurrent.wearId], ""),
+                    r[SkinPricesCurrent.price],
+                    r[SkinPricesCurrent.quantity]
                 )
-                r[SkinPrices.skinId] to (wear to skinPrice)
+                r[SkinPricesCurrent.skinId] to (wear to skinPrice)
             }
             .groupBy({ it.first }, { it.second })
             .mapValues { entry ->
@@ -124,19 +123,18 @@ class SkinRepository : SkinRepositoryInterface {
         
         if (skins.isEmpty()) return@dbQuery emptyList()
 
-        // Fetch all prices for filtered skins
+        // Fetch all prices for filtered skins in a single query to avoid N+1
         val skinIds = skins.map { it.skinId }
-        val pricesBySkin = SkinPrices.selectAll().where { SkinPrices.skinId inList skinIds }
+        val pricesBySkin = SkinPricesCurrent.selectAll().where { SkinPricesCurrent.skinId inList skinIds }
             .mapNotNull { r ->
-                val wear = CSWear.fromId(r[SkinPrices.wearId]) ?: return@mapNotNull null
+                val wear = CSWear.fromId(r[SkinPricesCurrent.wearId]) ?: return@mapNotNull null
                 val skinPrice = SkinPrice(
-                    r[SkinPrices.id],
-                    r[SkinPrices.skinId],
-                    WearCondition(r[SkinPrices.wearId], ""),
-                    r[SkinPrices.price],
-                    r[SkinPrices.quantity]
+                    r[SkinPricesCurrent.skinId],
+                    WearCondition(r[SkinPricesCurrent.wearId], ""),
+                    r[SkinPricesCurrent.price],
+                    r[SkinPricesCurrent.quantity]
                 )
-                r[SkinPrices.skinId] to (wear to skinPrice)
+                r[SkinPricesCurrent.skinId] to (wear to skinPrice)
             }
             .groupBy({ it.first }, { it.second })
             .mapValues { entry ->

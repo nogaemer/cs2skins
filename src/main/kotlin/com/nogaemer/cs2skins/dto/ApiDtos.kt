@@ -105,7 +105,7 @@ data class TradeUpFilterRequest(
     val maxProfit: Double? = null,
     val stattrak: Boolean? = null,
     val rarityId: String? = null,
-    val sortBy: String = "roi", // roi, profit, inputCost, createdAt
+    val sortBy: String = "roi", // roi, profit, inputCost, updatedAt
     val sortDirection: String = "desc", // asc, desc
     val page: Int = 0, // Page number (0-indexed)
     val size: Int = 20 // Page size
@@ -122,4 +122,22 @@ data class PageResponse<T>(
     val isLast: Boolean,
     val hasNext: Boolean,
     val hasPrevious: Boolean
+)
+
+/** A single time-bucketed point in a trade-up history series. */
+data class TradeUpHistoryPoint(
+    val bucketStart: Long,
+    val roi: Double,
+    val profit: Double,
+    val inputCost: Double,
+    val outputCost: Double
+)
+
+/** A single time-bucketed point in a skin price history series. */
+data class SkinPriceHistoryResponse(
+    val skinId: String,
+    val wearId: String,
+    val recordedAt: Long,
+    val price: java.math.BigDecimal,
+    val quantity: Int
 )
