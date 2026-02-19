@@ -3,7 +3,6 @@ package com.nogaemer.cs2skins.controller
 import com.nogaemer.cs2skins.dto.CollectionResponse
 import com.nogaemer.cs2skins.dto.CollectionWithSkinsResponse
 import com.nogaemer.cs2skins.service.CollectionService
-import kotlinx.coroutines.runBlocking
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 
@@ -12,23 +11,23 @@ import org.springframework.web.bind.annotation.*
 class CollectionController(private val collectionService: CollectionService) {
 
     @GetMapping
-    fun getAllCollections(): ResponseEntity<List<CollectionResponse>> = runBlocking {
+    suspend fun getAllCollections(): ResponseEntity<List<CollectionResponse>> {
         val collections = collectionService.getAllCollections()
-        ResponseEntity.ok(collections)
+        return ResponseEntity.ok(collections)
     }
 
     @GetMapping("/{collectionId}")
-    fun getCollectionById(@PathVariable collectionId: String): ResponseEntity<CollectionResponse> = runBlocking {
+    suspend fun getCollectionById(@PathVariable collectionId: String): ResponseEntity<CollectionResponse> {
         val collection = collectionService.getCollectionById(collectionId)
-        collection?.let { ResponseEntity.ok(it) } ?: ResponseEntity.notFound().build()
+        return collection?.let { ResponseEntity.ok(it) } ?: ResponseEntity.notFound().build()
     }
 
     @GetMapping("/{collectionId}/skins")
-    fun getCollectionWithSkins(
+    suspend fun getCollectionWithSkins(
         @PathVariable collectionId: String,
         @RequestParam(defaultValue = "false") stattrak: Boolean
-    ): ResponseEntity<CollectionWithSkinsResponse> = runBlocking {
+    ): ResponseEntity<CollectionWithSkinsResponse> {
         val collection = collectionService.getCollectionWithSkins(collectionId, stattrak)
-        collection?.let { ResponseEntity.ok(it) } ?: ResponseEntity.notFound().build()
+        return collection?.let { ResponseEntity.ok(it) } ?: ResponseEntity.notFound().build()
     }
 }

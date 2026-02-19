@@ -3,7 +3,6 @@ package com.nogaemer.cs2skins.controller
 import com.nogaemer.cs2skins.dto.TradeUpFilterRequest
 import com.nogaemer.cs2skins.dto.TradeUpResultResponse
 import com.nogaemer.cs2skins.service.TradeUpService
-import kotlinx.coroutines.runBlocking
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 
@@ -12,26 +11,26 @@ import org.springframework.web.bind.annotation.*
 class TradeUpController(private val tradeUpService: TradeUpService) {
 
     @GetMapping
-    fun getAllTradeUps(): ResponseEntity<List<TradeUpResultResponse>> = runBlocking {
+    suspend fun getAllTradeUps(): ResponseEntity<List<TradeUpResultResponse>> {
         val tradeUps = tradeUpService.getAllTradeUps()
-        ResponseEntity.ok(tradeUps)
+        return ResponseEntity.ok(tradeUps)
     }
 
     @GetMapping("/{id}")
-    fun getTradeUpById(@PathVariable id: Int): ResponseEntity<TradeUpResultResponse> = runBlocking {
+    suspend fun getTradeUpById(@PathVariable id: Int): ResponseEntity<TradeUpResultResponse> {
         val tradeUp = tradeUpService.getTradeUpById(id)
-        tradeUp?.let { ResponseEntity.ok(it) } ?: ResponseEntity.notFound().build()
+        return tradeUp?.let { ResponseEntity.ok(it) } ?: ResponseEntity.notFound().build()
     }
 
     @PostMapping("/filter")
-    fun filterTradeUps(@RequestBody filter: TradeUpFilterRequest): ResponseEntity<List<TradeUpResultResponse>> = runBlocking {
+    suspend fun filterTradeUps(@RequestBody filter: TradeUpFilterRequest): ResponseEntity<List<TradeUpResultResponse>> {
         val tradeUps = tradeUpService.filterTradeUps(filter)
-        ResponseEntity.ok(tradeUps)
+        return ResponseEntity.ok(tradeUps)
     }
 
     @DeleteMapping
-    fun deleteAllTradeUps(): ResponseEntity<Map<String, Any>> = runBlocking {
+    suspend fun deleteAllTradeUps(): ResponseEntity<Map<String, Any>> {
         val count = tradeUpService.deleteAllTradeUps()
-        ResponseEntity.ok(mapOf("deleted" to count, "message" to "All trade-ups deleted successfully"))
+        return ResponseEntity.ok(mapOf("deleted" to count, "message" to "All trade-ups deleted successfully"))
     }
 }
