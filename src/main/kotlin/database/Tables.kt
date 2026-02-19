@@ -115,6 +115,7 @@ object TradeUpInputs : Table("tradeup_inputs") {
         .references(TradeUpResults.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val skinId = varchar("skin_id", 255)
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val skinName = varchar("skin_name", 255) // Store name for display purposes
     val amount = integer("amount")
     val floatValue = double("float_value")
     val pricePerUnit = decimal("price_per_unit", 10, 2)
@@ -132,6 +133,7 @@ object TradeUpOutputs : Table("tradeup_outputs") {
         .references(TradeUpResults.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val skinId = varchar("skin_id", 255)
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val skinName = varchar("skin_name", 255) // Store name for display purposes
     val probability = double("probability")
     val floatValue = double("float_value")
     val price = decimal("price", 10, 2)

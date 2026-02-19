@@ -16,6 +16,14 @@ class TradeUpService(
     private val collectionRepository: CollectionRepository = CollectionRepository()
 ) {
 
+    companion object {
+        // Profitability thresholds for saving trade-ups
+        private const val MIN_ROI_THRESHOLD = 1.1  // Minimum 10% return on investment
+        private const val MAX_INPUT_COST = 10.0    // Maximum input cost in currency units
+        private const val MIN_PROFIT_THRESHOLD = 0.10  // Minimum profit in currency units
+        private const val MAX_OUTPUT_FLOAT = 0.4   // Maximum acceptable output float value
+    }
+
     private suspend fun <T> dbQuery(block: suspend () -> T): T =
         newSuspendedTransaction(Dispatchers.IO) { block() }
 
@@ -113,10 +121,10 @@ class TradeUpService(
                     )
 
                     // Save profitable trade-ups
-                    if (tradeUp.roiWithDropChange > 1.1 && 
-                        tradeUp.inputCostWithDropChange < 10 && 
-                        tradeUp.profitWithDropChange > 0.10 && 
-                        outputFloat < 0.4) {
+                    if (tradeUp.roiWithDropChange > MIN_ROI_THRESHOLD && 
+                        tradeUp.inputCostWithDropChange < MAX_INPUT_COST && 
+                        tradeUp.profitWithDropChange > MIN_PROFIT_THRESHOLD && 
+                        outputFloat < MAX_OUTPUT_FLOAT) {
                         
                         saveTradeUp(tradeUp, collectionA.collectionId, collectionB.collectionId, rarityId, stattrak)
                         savedCount++
@@ -161,7 +169,8 @@ class TradeUpService(
         // Insert input components
         TradeUpInputs.insert {
             it[TradeUpInputs.tradeUpResultId] = resultId
-            it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentA.skin.name // Using name as ID fallback
+            it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentA.skin.name // TODO: Use actual skinId when available
+            it[TradeUpInputs.skinName] = tradeUp.input.tradeUpInputComponentA.skin.name
             it[TradeUpInputs.amount] = tradeUp.input.tradeUpInputComponentA.amount
             it[TradeUpInputs.floatValue] = tradeUp.input.costsFloatInput?.floatA ?: 0.0
             it[TradeUpInputs.pricePerUnit] = BigDecimal(tradeUp.input.tradeUpInputComponentA.skin.price.values.firstOrNull() ?: 0.0)
@@ -169,7 +178,8 @@ class TradeUpService(
 
         TradeUpInputs.insert {
             it[TradeUpInputs.tradeUpResultId] = resultId
-            it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentB.skin.name // Using name as ID fallback
+            it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentB.skin.name // TODO: Use actual skinId when available
+            it[TradeUpInputs.skinName] = tradeUp.input.tradeUpInputComponentB.skin.name
             it[TradeUpInputs.amount] = tradeUp.input.tradeUpInputComponentB.amount
             it[TradeUpInputs.floatValue] = tradeUp.input.costsFloatInput?.floatB ?: 0.0
             it[TradeUpInputs.pricePerUnit] = BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
@@ -186,7 +196,8 @@ class TradeUpService(
             
             TradeUpOutputs.insert {
                 it[TradeUpOutputs.tradeUpResultId] = resultId
-                it[TradeUpOutputs.skinId] = outputSkin.name // Using name as ID fallback
+                it[TradeUpOutputs.skinId] = outputSkin.name // TODO: Use actual skinId when available
+                it[TradeUpOutputs.skinName] = outputSkin.name
                 it[TradeUpOutputs.probability] = probability
                 it[TradeUpOutputs.floatValue] = outputSkin.float ?: 0.0
                 it[TradeUpOutputs.price] = BigDecimal(outputSkin.price.values.firstOrNull() ?: 0.0)
@@ -273,7 +284,7 @@ class TradeUpService(
             .map {
                 TradeUpInputInfo(
                     skinId = it[TradeUpInputs.skinId],
-                    skinName = it[TradeUpInputs.skinId], // Using ID as name for now
+                    skinName = it[TradeUpInputs.skinName],
                     amount = it[TradeUpInputs.amount],
                     floatValue = it[TradeUpInputs.floatValue],
                     pricePerUnit = it[TradeUpInputs.pricePerUnit]
@@ -286,7 +297,7 @@ class TradeUpService(
             .map {
                 TradeUpOutputInfo(
                     skinId = it[TradeUpOutputs.skinId],
-                    skinName = it[TradeUpOutputs.skinId], // Using ID as name for now
+                    skinName = it[TradeUpOutputs.skinName],
                     probability = it[TradeUpOutputs.probability],
                     floatValue = it[TradeUpOutputs.floatValue],
                     price = it[TradeUpOutputs.price]

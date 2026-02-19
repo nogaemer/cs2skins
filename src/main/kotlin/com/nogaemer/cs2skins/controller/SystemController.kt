@@ -6,6 +6,7 @@ import com.nogaemer.cs2skins.service.TradeUpService
 import kotlinx.coroutines.*
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
+import java.util.concurrent.atomic.AtomicBoolean
 
 @RestController
 @RequestMapping("/api/system")
@@ -14,21 +15,21 @@ class SystemController(
     private val tradeUpService: TradeUpService
 ) {
 
-    private var seedJobRunning = false
-    private var calculateJobRunning = false
+    private val seedJobRunning = AtomicBoolean(false)
+    private val calculateJobRunning = AtomicBoolean(false)
 
     @PostMapping("/seed/collections")
     fun seedCollections(): ResponseEntity<JobStatusResponse> {
-        if (seedJobRunning) {
+        if (seedJobRunning.get()) {
             return ResponseEntity.ok(JobStatusResponse("running", "Seed job is already running"))
         }
 
-        seedJobRunning = true
+        seedJobRunning.set(true)
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 seedService.seedCollections()
             } finally {
-                seedJobRunning = false
+                seedJobRunning.set(false)
             }
         }
 
@@ -37,16 +38,16 @@ class SystemController(
 
     @PostMapping("/seed/skins")
     fun seedSkins(): ResponseEntity<JobStatusResponse> {
-        if (seedJobRunning) {
+        if (seedJobRunning.get()) {
             return ResponseEntity.ok(JobStatusResponse("running", "Seed job is already running"))
         }
 
-        seedJobRunning = true
+        seedJobRunning.set(true)
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 seedService.seedSkins()
             } finally {
-                seedJobRunning = false
+                seedJobRunning.set(false)
             }
         }
 
@@ -55,16 +56,16 @@ class SystemController(
 
     @PostMapping("/seed/all")
     fun seedAll(): ResponseEntity<JobStatusResponse> {
-        if (seedJobRunning) {
+        if (seedJobRunning.get()) {
             return ResponseEntity.ok(JobStatusResponse("running", "Seed job is already running"))
         }
 
-        seedJobRunning = true
+        seedJobRunning.set(true)
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 seedService.seedAll()
             } finally {
-                seedJobRunning = false
+                seedJobRunning.set(false)
             }
         }
 
@@ -75,16 +76,16 @@ class SystemController(
     fun calculateTradeUps(
         @RequestParam(defaultValue = "false") stattrak: Boolean
     ): ResponseEntity<JobStatusResponse> {
-        if (calculateJobRunning) {
+        if (calculateJobRunning.get()) {
             return ResponseEntity.ok(JobStatusResponse("running", "Calculate job is already running"))
         }
 
-        calculateJobRunning = true
+        calculateJobRunning.set(true)
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 tradeUpService.calculateAndSaveTradeUps(stattrak)
             } finally {
-                calculateJobRunning = false
+                calculateJobRunning.set(false)
             }
         }
 
@@ -93,11 +94,11 @@ class SystemController(
 
     @PostMapping("/calculate/all")
     fun calculateAllTradeUps(): ResponseEntity<JobStatusResponse> {
-        if (calculateJobRunning) {
+        if (calculateJobRunning.get()) {
             return ResponseEntity.ok(JobStatusResponse("running", "Calculate job is already running"))
         }
 
-        calculateJobRunning = true
+        calculateJobRunning.set(true)
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 // Calculate for non-stattrak
@@ -105,7 +106,7 @@ class SystemController(
                 // Calculate for stattrak
                 tradeUpService.calculateAndSaveTradeUps(true)
             } finally {
-                calculateJobRunning = false
+                calculateJobRunning.set(false)
             }
         }
 
@@ -115,8 +116,8 @@ class SystemController(
     @GetMapping("/status")
     fun getSystemStatus(): ResponseEntity<Map<String, Any>> {
         return ResponseEntity.ok(mapOf(
-            "seedJobRunning" to seedJobRunning,
-            "calculateJobRunning" to calculateJobRunning
+            "seedJobRunning" to seedJobRunning.get(),
+            "calculateJobRunning" to calculateJobRunning.get()
         ))
     }
 }
