@@ -2,6 +2,7 @@ package com.nogaemer.cs2skins.controller
 
 import com.nogaemer.cs2skins.dto.JobStatusResponse
 import com.nogaemer.cs2skins.service.AsyncJobService
+import com.nogaemer.cs2skins.service.TradeUpService
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import java.util.concurrent.atomic.AtomicBoolean
@@ -9,7 +10,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 @RestController
 @RequestMapping("/api/system")
 class SystemController(
-    private val asyncJobService: AsyncJobService
+    private val asyncJobService: AsyncJobService,
+    private val tradeUpService: TradeUpService
 ) {
 
     private val seedJobRunning = AtomicBoolean(false)
@@ -104,9 +106,27 @@ class SystemController(
 
     @GetMapping("/status")
     fun getSystemStatus(): ResponseEntity<Map<String, Any>> {
+        val gmTotal = tradeUpService.generateMastersTotal.get()
+        val gmProcessed = tradeUpService.generateMastersProcessed.get()
+        val cpTotal = tradeUpService.calculatePricesTotal.get()
+        val cpProcessed = tradeUpService.calculatePricesProcessed.get()
+
+        fun progressPercent(processed: Long, total: Long): Double =
+            if (total > 0) (processed.toDouble() / total * 100.0).coerceIn(0.0, 100.0) else 0.0
+
         return ResponseEntity.ok(mapOf(
             "seedJobRunning" to seedJobRunning.get(),
-            "calculateJobRunning" to calculateJobRunning.get()
+            "calculateJobRunning" to calculateJobRunning.get(),
+            "generateMasters" to mapOf(
+                "processed" to gmProcessed,
+                "total" to gmTotal,
+                "progressPercent" to progressPercent(gmProcessed, gmTotal)
+            ),
+            "calculatePrices" to mapOf(
+                "processed" to cpProcessed,
+                "total" to cpTotal,
+                "progressPercent" to progressPercent(cpProcessed, cpTotal)
+            )
         ))
     }
 }

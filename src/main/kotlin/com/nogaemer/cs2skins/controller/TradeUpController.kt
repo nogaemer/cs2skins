@@ -1,16 +1,53 @@
 package com.nogaemer.cs2skins.controller
 
+import com.nogaemer.cs2skins.dto.JobStatusResponse
 import com.nogaemer.cs2skins.dto.PageResponse
 import com.nogaemer.cs2skins.dto.TradeUpFilterRequest
 import com.nogaemer.cs2skins.dto.TradeUpHistoryPoint
 import com.nogaemer.cs2skins.dto.TradeUpResultResponse
+import com.nogaemer.cs2skins.service.AsyncJobService
 import com.nogaemer.cs2skins.service.TradeUpService
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
+import java.util.concurrent.atomic.AtomicBoolean
 
 @RestController
 @RequestMapping("/api/tradeups")
-class TradeUpController(private val tradeUpService: TradeUpService) {
+class TradeUpController(
+    private val tradeUpService: TradeUpService,
+    private val asyncJobService: AsyncJobService
+) {
+
+    private val generateMastersJobRunning = AtomicBoolean(false)
+    private val calculatePricesJobRunning = AtomicBoolean(false)
+
+    @PostMapping("/generate-masters")
+    fun generateMasters(
+        @RequestParam(defaultValue = "false") stattrak: Boolean
+    ): ResponseEntity<JobStatusResponse> {
+        if (!generateMastersJobRunning.compareAndSet(false, true)) {
+            return ResponseEntity.ok(JobStatusResponse("running", "Generate masters job is already running"))
+        }
+
+        asyncJobService.generateMastersAsync(stattrak)
+            .whenComplete { _, _ -> generateMastersJobRunning.set(false) }
+
+        return ResponseEntity.ok(JobStatusResponse("started", "Generate masters job started (stattrak: $stattrak)"))
+    }
+
+    @PostMapping("/calculate-prices")
+    fun calculatePrices(
+        @RequestParam(defaultValue = "false") stattrak: Boolean
+    ): ResponseEntity<JobStatusResponse> {
+        if (!calculatePricesJobRunning.compareAndSet(false, true)) {
+            return ResponseEntity.ok(JobStatusResponse("running", "Calculate prices job is already running"))
+        }
+
+        asyncJobService.calculatePricesAsync(stattrak)
+            .whenComplete { _, _ -> calculatePricesJobRunning.set(false) }
+
+        return ResponseEntity.ok(JobStatusResponse("started", "Calculate prices job started (stattrak: $stattrak)"))
+    }
 
     @GetMapping
     suspend fun getAllTradeUps(): ResponseEntity<List<TradeUpResultResponse>> {

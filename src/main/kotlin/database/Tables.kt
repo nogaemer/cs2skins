@@ -113,7 +113,8 @@ object SkinPriceHistory : Table("skin_price_history") {
 /**
  * Static trade-up definition (master record).
  * Represents a unique trade-up configuration: two collections, a rarity tier,
- * whether it is StatTrak, and the target output float.
+ * whether it is StatTrak, the specific input skins and split (amountA/amountB),
+ * and the target output float.
  * Metrics (ROI, profit, etc.) live in TradeupsCurrent and TradeupSnapshots.
  */
 object TradeupsMaster : Table("tradeups_master") {
@@ -126,6 +127,14 @@ object TradeupsMaster : Table("tradeups_master") {
         .references(Rarities.rarityId, onDelete = ReferenceOption.SET_NULL, onUpdate = ReferenceOption.CASCADE)
         .nullable()
     val stattrak = bool("stattrak").default(false)
+    val skinAId = varchar("skin_a_id", 255)
+        .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+        .nullable()
+    val skinBId = varchar("skin_b_id", 255)
+        .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+        .nullable()
+    val amountA = integer("amount_a").nullable()
+    val amountB = integer("amount_b").nullable()
     val outputFloat = double("output_float")
     val createdAt = long("created_at").clientDefault { System.currentTimeMillis() }
 
@@ -135,6 +144,12 @@ object TradeupsMaster : Table("tradeups_master") {
         index("idx_tm_stattrak", false, stattrak)
         index("idx_tm_rarity", false, rarityId)
         index("idx_tm_collections", false, collectionAId, collectionBId)
+        index("idx_tm_skins", false, skinAId, skinBId)
+        uniqueIndex(
+            "uniq_tm_identity",
+            collectionAId, collectionBId, rarityId, stattrak,
+            skinAId, skinBId, amountA, amountB, outputFloat
+        )
     }
 }
 

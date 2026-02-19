@@ -62,6 +62,38 @@ class AsyncJobService(
     }
 
     @Async("taskExecutor")
+    fun generateMastersAsync(stattrak: Boolean): CompletableFuture<Void> {
+        return CompletableFuture.runAsync {
+            try {
+                logger.info("Starting master definition generation job (stattrak: $stattrak)")
+                runBlocking {
+                    tradeUpService.generateMasterDefinitions(stattrak)
+                }
+                logger.info("Master definition generation job completed successfully")
+            } catch (e: Exception) {
+                logger.error("Master definition generation job failed", e)
+                throw e
+            }
+        }
+    }
+
+    @Async("taskExecutor")
+    fun calculatePricesAsync(stattrak: Boolean): CompletableFuture<Void> {
+        return CompletableFuture.runAsync {
+            try {
+                logger.info("Starting price calculation job (stattrak: $stattrak)")
+                runBlocking {
+                    tradeUpService.calculatePricesForMasters(stattrak)
+                }
+                logger.info("Price calculation job completed successfully")
+            } catch (e: Exception) {
+                logger.error("Price calculation job failed", e)
+                throw e
+            }
+        }
+    }
+
+    @Async("taskExecutor")
     fun calculateTradeUpsAsync(stattrak: Boolean): CompletableFuture<Void> {
         return CompletableFuture.runAsync {
             try {
