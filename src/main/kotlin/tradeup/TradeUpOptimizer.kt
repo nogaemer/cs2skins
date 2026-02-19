@@ -187,6 +187,7 @@ class TradeUpOptimizer(
             skinDTO.price.mapValues { (_, skinPrice) -> skinPrice.price.toDouble() }.toMutableMap()
 
         return Skin(
+            skinId = skinDTO.skinId,
             name = skinDTO.name,
             collectionId = skinDTO.collectionId!!,
             price = priceMap,

@@ -3,6 +3,7 @@ package models
 import tradeup.ProbabilityLinear
 
 data class Skin(
+    val skinId: String,
     val name: String,
     val price: MutableMap<CSWear, Double>,
     val collectionId: String,

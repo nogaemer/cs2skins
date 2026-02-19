@@ -17,7 +17,7 @@ fun main(args: Array<String>) {
 }
 
 @Component
-class DatabaseInitializer {
+class SkinDatabaseInitializer {
     @EventListener(ApplicationReadyEvent::class)
     fun initializeTables() {
         transaction {

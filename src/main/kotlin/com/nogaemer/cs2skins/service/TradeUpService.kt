@@ -5,7 +5,7 @@ import database.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jetbrains.exposed.sql.*
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.springframework.stereotype.Service
 import tradeup.*
@@ -123,11 +123,11 @@ class TradeUpService(
                     )
 
                     // Check if profitable
-                    if (tradeUp.roiWithDropChange > MIN_ROI_THRESHOLD && 
-                        tradeUp.inputCostWithDropChange < MAX_INPUT_COST && 
-                        tradeUp.profitWithDropChange > MIN_PROFIT_THRESHOLD && 
-                        outputFloat < MAX_OUTPUT_FLOAT) {
-                        
+//                    tradeUp.roiWithDropChange > MIN_ROI_THRESHOLD &&
+//                            tradeUp.inputCostWithDropChange < MAX_INPUT_COST &&
+//                            tradeUp.profitWithDropChange > MIN_PROFIT_THRESHOLD &&
+//                            outputFloat < MAX_OUTPUT_FLOAT
+                    if (true) {
                         tradeUpsToSave.add(tradeUp to (rarityId to rarityId))
                     }
                 }
@@ -187,7 +187,7 @@ class TradeUpService(
         // Insert input components
         TradeUpInputs.insert {
             it[TradeUpInputs.tradeUpResultId] = resultId
-            it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentA.skin.name // TODO: Use actual skinId when available
+            it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentA.skin.skinId
             it[TradeUpInputs.skinName] = tradeUp.input.tradeUpInputComponentA.skin.name
             it[TradeUpInputs.amount] = tradeUp.input.tradeUpInputComponentA.amount
             it[TradeUpInputs.floatValue] = tradeUp.input.costsFloatInput?.floatA ?: 0.0
@@ -196,7 +196,7 @@ class TradeUpService(
 
         TradeUpInputs.insert {
             it[TradeUpInputs.tradeUpResultId] = resultId
-            it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentB.skin.name // TODO: Use actual skinId when available
+            it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentB.skin.skinId
             it[TradeUpInputs.skinName] = tradeUp.input.tradeUpInputComponentB.skin.name
             it[TradeUpInputs.amount] = tradeUp.input.tradeUpInputComponentB.amount
             it[TradeUpInputs.floatValue] = tradeUp.input.costsFloatInput?.floatB ?: 0.0
@@ -221,7 +221,7 @@ class TradeUpService(
             
             TradeUpOutputs.insert {
                 it[TradeUpOutputs.tradeUpResultId] = resultId
-                it[TradeUpOutputs.skinId] = outputSkin.name // TODO: Use actual skinId when available
+                it[TradeUpOutputs.skinId] = outputSkin.skinId
                 it[TradeUpOutputs.skinName] = outputSkin.name
                 it[TradeUpOutputs.probability] = probability
                 it[TradeUpOutputs.floatValue] = outputSkin.float ?: 0.0
