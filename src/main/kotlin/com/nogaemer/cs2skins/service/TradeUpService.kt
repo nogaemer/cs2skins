@@ -362,22 +362,34 @@ class TradeUpService(
         toMs: Long,
         bucketMs: Long = 86_400_000L
     ): List<TradeUpHistoryPoint> = dbQuery {
-        TradeupSnapshots.selectAll()
-            .where {
+        // Compute bucket start in SQL: (snapshotTime / bucketMs) * bucketMs, aliased as "bucket_start"
+        val bucketStartExpr = (
+            (TradeupSnapshots.snapshotTime / bucketMs.toInt()) *
+                bucketMs.toInt()
+            ).alias("bucket_start")
+
+        // Aggregate expressions (averages) for each metric, with aliases
+        val avgRoiExpr = TradeupSnapshots.roi.avg().alias("avg_roi")
+        val avgProfitExpr = TradeupSnapshots.profit.avg().alias("avg_profit")
+        val avgInputCostExpr = TradeupSnapshots.inputCost.avg().alias("avg_input_cost")
+        val avgOutputCostExpr = TradeupSnapshots.outputCost.avg().alias("avg_output_cost")
+
+        TradeupSnapshots
+            .slice(bucketStartExpr, avgRoiExpr, avgProfitExpr, avgInputCostExpr, avgOutputCostExpr)
+            .select {
                 (TradeupSnapshots.tradeupId eq tradeupId) and
                 (TradeupSnapshots.snapshotTime greaterEq fromMs) and
                 (TradeupSnapshots.snapshotTime lessEq toMs)
             }
-            .orderBy(TradeupSnapshots.snapshotTime to SortOrder.ASC)
-            .toList()
-            .groupBy { row -> (row[TradeupSnapshots.snapshotTime] / bucketMs) * bucketMs }
-            .map { (bucketStart, rows) ->
+            .groupBy(bucketStartExpr)
+            .orderBy(bucketStartExpr to SortOrder.ASC)
+            .map { row ->
                 TradeUpHistoryPoint(
-                    bucketStart = bucketStart,
-                    roi = rows.map { it[TradeupSnapshots.roi] }.average(),
-                    profit = rows.map { it[TradeupSnapshots.profit] }.average(),
-                    inputCost = rows.map { it[TradeupSnapshots.inputCost] }.average(),
-                    outputCost = rows.map { it[TradeupSnapshots.outputCost] }.average()
+                    bucketStart = row[bucketStartExpr],
+                    roi = row[avgRoiExpr] ?: 0.0,
+                    profit = row[avgProfitExpr] ?: 0.0,
+                    inputCost = row[avgInputCostExpr] ?: 0.0,
+                    outputCost = row[avgOutputCostExpr] ?: 0.0
                 )
             }
     }
