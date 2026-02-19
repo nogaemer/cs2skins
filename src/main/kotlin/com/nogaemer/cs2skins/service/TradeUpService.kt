@@ -13,7 +13,8 @@ import java.math.BigDecimal
 
 @Service
 class TradeUpService(
-    private val collectionRepository: CollectionRepository = CollectionRepository()
+    private val collectionRepository: CollectionRepository,
+    private val optimizer: TradeUpOptimizer
 ) {
 
     companion object {
@@ -31,7 +32,6 @@ class TradeUpService(
      * Calculate all trade-ups and persist them to the database
      */
     suspend fun calculateAndSaveTradeUps(stattrak: Boolean = false): Int = withContext(Dispatchers.IO) {
-        val optimizer = TradeUpOptimizer(collectionRepository)
         val collections = collectionRepository.findAll()
         var savedCount = 0
 

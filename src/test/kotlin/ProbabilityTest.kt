@@ -1,6 +1,4 @@
-import database.DatabaseFactory
-import database.SkinRepository
-import kotlinx.coroutines.runBlocking
+import database.CollectionRepository
 import models.CSWear
 import models.Skin
 import org.junit.jupiter.api.Assertions.*
@@ -193,7 +191,7 @@ class ProbabilityTest {
 
     @Test
     fun testCollection(){
-        val tradeUpOptimizer = TradeUpOptimizer()
+        val tradeUpOptimizer = TradeUpOptimizer(CollectionRepository())
         val skinsA = mutableListOf<Skin>(
             Skin(
                 "Nova Rising Skull",
@@ -313,13 +311,6 @@ class ProbabilityTest {
 
             }
         }
-    }
-
-    @Test
-    fun testDB(){
-        DatabaseFactory.init()
-        runBlocking { val skins = SkinRepository().findByCollectionWithPrice("collection-set-community-11")
-        println(skins)}
     }
 
 }

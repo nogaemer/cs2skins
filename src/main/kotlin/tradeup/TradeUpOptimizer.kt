@@ -4,17 +4,21 @@ import database.Collection
 import database.CollectionRepository
 import database.SkinDTO
 import database.SkinRepository
-import kotlinx.coroutines.runBlocking
 import models.CSWear
 import models.CollectionWithSkins
 import models.Skin
+import org.slf4j.LoggerFactory
+import org.springframework.stereotype.Component
 
+@Component
 class TradeUpOptimizer(
-    val collectionRepository: CollectionRepository = CollectionRepository()
+    val collectionRepository: CollectionRepository
 ) {
 
-    fun optimizeAll() {
-        val collections = runBlocking { collectionRepository.findAll() }
+    private val logger = LoggerFactory.getLogger(TradeUpOptimizer::class.java)
+
+    suspend fun optimizeAll() {
+        val collections = collectionRepository.findAll()
 
         //none-stattrak
         for (i in collections.indices) {
@@ -28,7 +32,7 @@ class TradeUpOptimizer(
             }
         }
 
-        println("\n\n ${"#".repeat(25)} Stattrak ${"#".repeat(25)}\n")
+        logger.info("${"#".repeat(25)} Stattrak ${"#".repeat(25)}")
 
         //stattrak
         for (i in collections.indices) {
@@ -107,7 +111,19 @@ class TradeUpOptimizer(
                     if (tradeUp.roiWithDropChange > 1.1 && tradeUp.inputCostWithDropChange < 10 && tradeUp.profitWithDropChange > 0.10 && outputFloat < 0.4) {
                         val aStr = "${tradeUp.input.tradeUpInputComponentA.amount}x ${tradeUp.input.tradeUpInputComponentA.skin.name} - ${tradeUp.input.costsFloatInput!!.floatA}"
                         val bStr = "${tradeUp.input.tradeUpInputComponentB.amount}x ${tradeUp.input.tradeUpInputComponentB.skin.name} - ${tradeUp.input.costsFloatInput.floatB}"
-                        println(String.format("%-60s %-60s float %-22s | roi %6.2f | profit %8.2f | rarity %s", aStr, bStr, outputFloat.toString(), tradeUp.roiWithDropChange, tradeUp.profitWithDropChange, rarityId))
+                        if (logger.isDebugEnabled) {
+                            logger.debug(
+                                String.format(
+                                    "%-60s %-60s float %-22s | roi %6.2f | profit %8.2f | rarity %s",
+                                    aStr,
+                                    bStr,
+                                    outputFloat.toString(),
+                                    tradeUp.roiWithDropChange,
+                                    tradeUp.profitWithDropChange,
+                                    rarityId
+                                )
+                            )
+                        }
                     }
                 }
             }
@@ -196,8 +212,8 @@ class TradeUpOptimizer(
         )
     }
 
-    fun getCollectionWithSkins(collection: Collection, stattrak: Boolean = false): CollectionWithSkins {
-        val skinsOfCollectionA = runBlocking { SkinRepository().findByCollectionWithPrice(collection.collectionId, stattrak) }
+    suspend fun getCollectionWithSkins(collection: Collection, stattrak: Boolean = false): CollectionWithSkins {
+        val skinsOfCollectionA = SkinRepository().findByCollectionWithPrice(collection.collectionId, stattrak)
         val skinsByRarity: MutableMap<String, MutableList<SkinDTO>> = mutableMapOf()
 
         skinsOfCollectionA.forEach { skin ->
