@@ -135,45 +135,61 @@ class TradeUpService(
         rarityId: String,
         stattrak: Boolean
     ) {
+        // Calculate average float from input components
+        val avgFloat = ((tradeUp.input.costsFloatInput?.floatA ?: 0.0) * tradeUp.input.tradeUpInputComponentA.amount + 
+                        (tradeUp.input.costsFloatInput?.floatB ?: 0.0) * tradeUp.input.tradeUpInputComponentB.amount) / 10.0
+        
+        // Extract values safely
+        val roiValue: Double = tradeUp.roiWithDropChange.let { if (it.isFinite()) it else 0.0 }
+        val profitValue: Double = tradeUp.profitWithDropChange.let { if (it.isFinite()) it else 0.0 }
+        val inputCostValue: Double = tradeUp.inputCostWithDropChange.let { if (it.isFinite()) it else 0.0 }
+        val outputCostValue: Double = tradeUp.expectedReturn.let { if (it.isFinite()) it else 0.0 }
+        
         // Insert trade-up result
-        val resultId = TradeUpResults.insertAndGetId {
+        val resultId = TradeUpResults.insert {
             it[TradeUpResults.collectionAId] = collectionAId
             it[TradeUpResults.collectionBId] = collectionBId
             it[TradeUpResults.rarityId] = rarityId
             it[TradeUpResults.stattrak] = stattrak
-            it[outputFloat] = tradeUp.input.costsFloatInput?.floatAvg ?: 0.0
-            it[roi] = tradeUp.roiWithDropChange
-            it[profit] = tradeUp.profitWithDropChange
-            it[inputCost] = tradeUp.inputCostWithDropChange
-            it[outputCost] = tradeUp.outputCostWithDropChange
-        }.value
+            it[TradeUpResults.outputFloat] = avgFloat
+            it[TradeUpResults.roi] = roiValue
+            it[TradeUpResults.profit] = profitValue
+            it[TradeUpResults.inputCost] = inputCostValue
+            it[TradeUpResults.outputCost] = outputCostValue
+        }[TradeUpResults.id]
 
         // Insert input components
         TradeUpInputs.insert {
-            it[tradeUpResultId] = resultId
-            it[skinId] = tradeUp.input.tradeUpInputComponentA.skin.name // Using name as ID fallback
-            it[amount] = tradeUp.input.tradeUpInputComponentA.amount
-            it[floatValue] = tradeUp.input.costsFloatInput?.floatA ?: 0.0
-            it[pricePerUnit] = BigDecimal(tradeUp.input.tradeUpInputComponentA.skin.price.values.firstOrNull() ?: 0.0)
+            it[TradeUpInputs.tradeUpResultId] = resultId
+            it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentA.skin.name // Using name as ID fallback
+            it[TradeUpInputs.amount] = tradeUp.input.tradeUpInputComponentA.amount
+            it[TradeUpInputs.floatValue] = tradeUp.input.costsFloatInput?.floatA ?: 0.0
+            it[TradeUpInputs.pricePerUnit] = BigDecimal(tradeUp.input.tradeUpInputComponentA.skin.price.values.firstOrNull() ?: 0.0)
         }
 
         TradeUpInputs.insert {
-            it[tradeUpResultId] = resultId
-            it[skinId] = tradeUp.input.tradeUpInputComponentB.skin.name // Using name as ID fallback
-            it[amount] = tradeUp.input.tradeUpInputComponentB.amount
-            it[floatValue] = tradeUp.input.costsFloatInput?.floatB ?: 0.0
-            it[pricePerUnit] = BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
+            it[TradeUpInputs.tradeUpResultId] = resultId
+            it[TradeUpInputs.skinId] = tradeUp.input.tradeUpInputComponentB.skin.name // Using name as ID fallback
+            it[TradeUpInputs.amount] = tradeUp.input.tradeUpInputComponentB.amount
+            it[TradeUpInputs.floatValue] = tradeUp.input.costsFloatInput?.floatB ?: 0.0
+            it[TradeUpInputs.pricePerUnit] = BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
         }
 
         // Insert output skins with probabilities
         tradeUp.output.skins.forEach { outputSkin ->
-            val probability = tradeUp.output.calculateDropChance(outputSkin.collectionId)
+            // Calculate drop probability based on collection
+            val ballotsFromA = if (tradeUp.input.tradeUpInputComponentA.collectionId == outputSkin.collectionId) 
+                tradeUp.input.tradeUpInputComponentA.amount else 0
+            val ballotsFromB = if (tradeUp.input.tradeUpInputComponentB.collectionId == outputSkin.collectionId) 
+                tradeUp.input.tradeUpInputComponentB.amount else 0
+            val probability = (ballotsFromA + ballotsFromB) / 10.0
+            
             TradeUpOutputs.insert {
-                it[tradeUpResultId] = resultId
-                it[skinId] = outputSkin.name // Using name as ID fallback
+                it[TradeUpOutputs.tradeUpResultId] = resultId
+                it[TradeUpOutputs.skinId] = outputSkin.name // Using name as ID fallback
                 it[TradeUpOutputs.probability] = probability
-                it[floatValue] = outputSkin.float ?: 0.0
-                it[price] = BigDecimal(outputSkin.price.values.firstOrNull() ?: 0.0)
+                it[TradeUpOutputs.floatValue] = outputSkin.float ?: 0.0
+                it[TradeUpOutputs.price] = BigDecimal(outputSkin.price.values.firstOrNull() ?: 0.0)
             }
         }
     }
