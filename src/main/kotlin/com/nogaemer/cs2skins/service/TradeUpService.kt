@@ -231,15 +231,17 @@ class TradeUpService(
     }
 
     suspend fun getAllTradeUps(): List<TradeUpResultResponse> = dbQuery {
-        TradeUpResults.selectAll()
-            .map { mapToTradeUpResponse(it) }
+        val results = TradeUpResults.selectAll().toList()
+        mapToTradeUpResponsesBulk(results)
     }
 
     suspend fun getTradeUpById(id: Int): TradeUpResultResponse? = dbQuery {
-        TradeUpResults.selectAll()
+        val results = TradeUpResults.selectAll()
             .where { TradeUpResults.id eq id }
-            .map { mapToTradeUpResponse(it) }
-            .singleOrNull()
+            .toList()
+        
+        if (results.isEmpty()) null
+        else mapToTradeUpResponsesBulk(results).firstOrNull()
     }
 
     suspend fun filterTradeUps(filter: TradeUpFilterRequest): List<TradeUpResultResponse> = dbQuery {
@@ -293,11 +295,105 @@ class TradeUpService(
             }
         }
 
-        query.map { mapToTradeUpResponse(it) }
+        val results = query.toList()
+        mapToTradeUpResponsesBulk(results)
     }
 
     suspend fun deleteAllTradeUps(): Int = dbQuery {
         TradeUpResults.deleteAll()
+    }
+
+    /**
+     * Bulk mapping function that eliminates N+1 queries by fetching all related data in batches
+     */
+    private fun mapToTradeUpResponsesBulk(results: List<ResultRow>): List<TradeUpResultResponse> {
+        if (results.isEmpty()) return emptyList()
+        
+        val resultIds = results.map { it[TradeUpResults.id] }
+        
+        // Fetch all inputs in one query
+        val inputsByResultId = TradeUpInputs.selectAll()
+            .where { TradeUpInputs.tradeUpResultId inList resultIds }
+            .map { row ->
+                row[TradeUpInputs.tradeUpResultId] to TradeUpInputInfo(
+                    skinId = row[TradeUpInputs.skinId],
+                    skinName = row[TradeUpInputs.skinName],
+                    amount = row[TradeUpInputs.amount],
+                    floatValue = row[TradeUpInputs.floatValue],
+                    pricePerUnit = row[TradeUpInputs.pricePerUnit]
+                )
+            }
+            .groupBy({ it.first }, { it.second })
+        
+        // Fetch all outputs in one query
+        val outputsByResultId = TradeUpOutputs.selectAll()
+            .where { TradeUpOutputs.tradeUpResultId inList resultIds }
+            .map { row ->
+                row[TradeUpOutputs.tradeUpResultId] to TradeUpOutputInfo(
+                    skinId = row[TradeUpOutputs.skinId],
+                    skinName = row[TradeUpOutputs.skinName],
+                    probability = row[TradeUpOutputs.probability],
+                    floatValue = row[TradeUpOutputs.floatValue],
+                    price = row[TradeUpOutputs.price]
+                )
+            }
+            .groupBy({ it.first }, { it.second })
+        
+        // Fetch all unique collections in one query
+        val collectionIds = results.flatMap { 
+            listOf(it[TradeUpResults.collectionAId], it[TradeUpResults.collectionBId]) 
+        }.distinct()
+        
+        val collectionsById = Collections.selectAll()
+            .where { Collections.collectionId inList collectionIds }
+            .associate { 
+                it[Collections.collectionId] to CollectionInfo(
+                    it[Collections.collectionId], 
+                    it[Collections.name]
+                )
+            }
+        
+        // Fetch all unique rarities in one query
+        val rarityIds = results.mapNotNull { it[TradeUpResults.rarityId] }.distinct()
+        val raritiesById = if (rarityIds.isNotEmpty()) {
+            Rarities.selectAll()
+                .where { Rarities.rarityId inList rarityIds }
+                .associate { 
+                    it[Rarities.rarityId] to RarityInfo(
+                        it[Rarities.rarityId],
+                        it[Rarities.name],
+                        it[Rarities.colorHex]
+                    )
+                }
+        } else {
+            emptyMap()
+        }
+        
+        // Now map each result using the pre-fetched data
+        return results.map { row ->
+            val resultId = row[TradeUpResults.id]
+            val collectionAId = row[TradeUpResults.collectionAId]
+            val collectionBId = row[TradeUpResults.collectionBId]
+            val rarityId = row[TradeUpResults.rarityId]
+            
+            TradeUpResultResponse(
+                id = resultId,
+                collectionA = collectionsById[collectionAId] 
+                    ?: CollectionInfo(collectionAId, collectionAId),
+                collectionB = collectionsById[collectionBId] 
+                    ?: CollectionInfo(collectionBId, collectionBId),
+                rarity = rarityId?.let { raritiesById[it] },
+                stattrak = row[TradeUpResults.stattrak],
+                outputFloat = row[TradeUpResults.outputFloat],
+                roi = row[TradeUpResults.roi],
+                profit = row[TradeUpResults.profit],
+                inputCost = row[TradeUpResults.inputCost],
+                outputCost = row[TradeUpResults.outputCost],
+                inputs = inputsByResultId[resultId] ?: emptyList(),
+                outputs = outputsByResultId[resultId] ?: emptyList(),
+                createdAt = row[TradeUpResults.createdAt]
+            )
+        }
     }
 
     private fun mapToTradeUpResponse(row: ResultRow): TradeUpResultResponse {
