@@ -341,11 +341,12 @@ class TradeUpService(
     }
 
     suspend fun deleteAllTradeUps(): Int = dbQuery {
-        TradeupSnapshots.deleteAll()
-        TradeupsCurrent.deleteAll()
-        TradeUpOutputs.deleteAll()
-        TradeUpInputs.deleteAll()
-        TradeupsMaster.deleteAll()
+        val deletedSnapshots = TradeupSnapshots.deleteAll()
+        val deletedCurrent = TradeupsCurrent.deleteAll()
+        val deletedOutputs = TradeUpOutputs.deleteAll()
+        val deletedInputs = TradeUpInputs.deleteAll()
+        val deletedMaster = TradeupsMaster.deleteAll()
+        deletedSnapshots + deletedCurrent + deletedOutputs + deletedInputs + deletedMaster
     }
 
     /**
