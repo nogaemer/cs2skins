@@ -22,33 +22,20 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
     }
 
     /**
-     * Upserts the current price and inserts a history snapshot in a single transaction.
+     * Upserts the current price atomically (PostgreSQL ON CONFLICT DO UPDATE)
+     * and appends a history snapshot in the same transaction.
      */
     override suspend fun create(skinPrice: SkinPrice): SkinPrice = dbQuery {
         val wearId = ensureWearExists(skinPrice.wear)
         val now = System.currentTimeMillis()
 
-        // Upsert into skin_prices_current
-        val existing = SkinPricesCurrent.selectAll()
-            .where { (SkinPricesCurrent.skinId eq skinPrice.skinId) and (SkinPricesCurrent.wearId eq wearId) }
-            .singleOrNull()
-
-        if (existing == null) {
-            SkinPricesCurrent.insert {
-                it[SkinPricesCurrent.skinId] = skinPrice.skinId
-                it[SkinPricesCurrent.wearId] = wearId
-                it[SkinPricesCurrent.price] = skinPrice.price
-                it[SkinPricesCurrent.quantity] = skinPrice.quantity
-                it[SkinPricesCurrent.updatedAt] = now
-            }
-        } else {
-            SkinPricesCurrent.update({
-                (SkinPricesCurrent.skinId eq skinPrice.skinId) and (SkinPricesCurrent.wearId eq wearId)
-            }) {
-                it[SkinPricesCurrent.price] = skinPrice.price
-                it[SkinPricesCurrent.quantity] = skinPrice.quantity
-                it[SkinPricesCurrent.updatedAt] = now
-            }
+        // Atomic upsert: INSERT … ON CONFLICT (skin_id, wear_id) DO UPDATE SET …
+        SkinPricesCurrent.upsert {
+            it[SkinPricesCurrent.skinId] = skinPrice.skinId
+            it[SkinPricesCurrent.wearId] = wearId
+            it[SkinPricesCurrent.price] = skinPrice.price
+            it[SkinPricesCurrent.quantity] = skinPrice.quantity
+            it[SkinPricesCurrent.updatedAt] = now
         }
 
         // Always append a history snapshot
@@ -64,15 +51,18 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
     }
 
     override suspend fun findBySkin(skinId: String): List<SkinPrice> = dbQuery {
-        SkinPricesCurrent.selectAll().where { SkinPricesCurrent.skinId eq skinId }
-            .map { rowToSkinPrice(it) }
+        val rows = SkinPricesCurrent.selectAll().where { SkinPricesCurrent.skinId eq skinId }.toList()
+        if (rows.isEmpty()) return@dbQuery emptyList()
+        val wearById = loadWearConditions(rows.map { it[SkinPricesCurrent.wearId] }.distinct())
+        rows.map { rowToSkinPrice(it, wearById) }
     }
 
     override suspend fun findBySkinAndWear(skinId: String, wearId: String): SkinPrice? = dbQuery {
-        SkinPricesCurrent.selectAll()
+        val row = SkinPricesCurrent.selectAll()
             .where { (SkinPricesCurrent.skinId eq skinId) and (SkinPricesCurrent.wearId eq wearId) }
-            .map { rowToSkinPrice(it) }
-            .singleOrNull()
+            .singleOrNull() ?: return@dbQuery null
+        val wearById = loadWearConditions(listOf(wearId))
+        rowToSkinPrice(row, wearById)
     }
 
     override suspend fun findWithWearCondition(skinId: String): List<PriceWithWear> = dbQuery {
@@ -82,8 +72,9 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
             .selectAll()
             .where { SkinPricesCurrent.skinId eq skinId }
             .map { row ->
+                val wearCondition = WearCondition(row[WearConditions.wearId], row[WearConditions.name])
                 PriceWithWear(
-                    skinPrice = rowToSkinPrice(row),
+                    skinPrice = rowToSkinPrice(row, wearCondition),
                     wearConditionName = row[WearConditions.name]
                 )
             }
@@ -152,18 +143,25 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
         historyCleaned || currentCleaned
     }
 
-    private fun rowToSkinPrice(row: ResultRow) = SkinPrice(
+    /** Batch-loads wear conditions for the given ids to avoid N+1 queries. */
+    private fun loadWearConditions(wearIds: List<String>): Map<String, WearCondition> {
+        if (wearIds.isEmpty()) return emptyMap()
+        return WearConditions.selectAll()
+            .where { WearConditions.wearId inList wearIds }
+            .associate { it[WearConditions.wearId] to WearCondition(it[WearConditions.wearId], it[WearConditions.name]) }
+    }
+
+    /** Used when the WearCondition is already known (e.g. from a JOIN). */
+    private fun rowToSkinPrice(row: ResultRow, wear: WearCondition) = SkinPrice(
         skinId = row[SkinPricesCurrent.skinId],
-        wear = run {
-            val wearIdValue = row[SkinPricesCurrent.wearId]
-            WearConditions.selectAll().where { WearConditions.wearId eq wearIdValue }
-                .limit(1)
-                .map { rw -> WearCondition(wearId = rw[WearConditions.wearId], name = rw[WearConditions.name]) }
-                .single()
-        },
+        wear = wear,
         price = row[SkinPricesCurrent.price],
         quantity = row[SkinPricesCurrent.quantity]
     )
+
+    /** Used when wear conditions have been pre-loaded in bulk. */
+    private fun rowToSkinPrice(row: ResultRow, wearById: Map<String, WearCondition>) =
+        rowToSkinPrice(row, wearById[row[SkinPricesCurrent.wearId]] ?: WearCondition(row[SkinPricesCurrent.wearId], ""))
 }
 
 /** Immutable point in a skin price history series. */
@@ -184,4 +182,5 @@ interface SkinPriceRepositoryInterface {
     suspend fun update(skinPrice: SkinPrice): Boolean
     suspend fun deleteAll(): Boolean
 }
+
 

@@ -241,7 +241,7 @@ class TradeUpService(
 
     suspend fun getAllTradeUps(): List<TradeUpResultResponse> = dbQuery {
         val results = TradeupsMaster
-            .join(TradeupsCurrent, JoinType.INNER,
+            .join(TradeupsCurrent, JoinType.LEFT,
                 additionalConstraint = { TradeupsMaster.id eq TradeupsCurrent.tradeupId })
             .selectAll()
             .toList()
@@ -250,7 +250,7 @@ class TradeUpService(
 
     suspend fun getTradeUpById(id: Int): TradeUpResultResponse? = dbQuery {
         val results = TradeupsMaster
-            .join(TradeupsCurrent, JoinType.INNER,
+            .join(TradeupsCurrent, JoinType.LEFT,
                 additionalConstraint = { TradeupsMaster.id eq TradeupsCurrent.tradeupId })
             .selectAll()
             .where { TradeupsMaster.id eq id }
@@ -262,7 +262,7 @@ class TradeUpService(
 
     suspend fun filterTradeUps(filter: TradeUpFilterRequest): PageResponse<TradeUpResultResponse> = dbQuery {
         var query = TradeupsMaster
-            .join(TradeupsCurrent, JoinType.INNER,
+            .join(TradeupsCurrent, JoinType.LEFT,
                 additionalConstraint = { TradeupsMaster.id eq TradeupsCurrent.tradeupId })
             .selectAll()
 
@@ -351,6 +351,9 @@ class TradeUpService(
 
     /**
      * Returns aggregated time-series history for a specific trade-up.
+     * Rows are fetched with the time filter pushed to the DB, then grouped
+     * into buckets in-process. The time window is bounded by the [maxPoints]
+     * parameter in the controller, keeping memory use manageable.
      *
      * @param tradeupId  the trade-up master record id
      * @param fromMs     start of time range (epoch milliseconds, inclusive)
@@ -363,34 +366,22 @@ class TradeUpService(
         toMs: Long,
         bucketMs: Long = 86_400_000L
     ): List<TradeUpHistoryPoint> = dbQuery {
-        // Compute bucket start in SQL: (snapshotTime / bucketMs) * bucketMs, aliased as "bucket_start"
-        val bucketStartExpr = (
-            (TradeupSnapshots.snapshotTime / bucketMs.toInt()) *
-                bucketMs.toInt()
-            ).alias("bucket_start")
-
-        // Aggregate expressions (averages) for each metric, with aliases
-        val avgRoiExpr = TradeupSnapshots.roi.avg().alias("avg_roi")
-        val avgProfitExpr = TradeupSnapshots.profit.avg().alias("avg_profit")
-        val avgInputCostExpr = TradeupSnapshots.inputCost.avg().alias("avg_input_cost")
-        val avgOutputCostExpr = TradeupSnapshots.outputCost.avg().alias("avg_output_cost")
-
-        TradeupSnapshots
-            .slice(bucketStartExpr, avgRoiExpr, avgProfitExpr, avgInputCostExpr, avgOutputCostExpr)
-            .select {
+        TradeupSnapshots.selectAll()
+            .where {
                 (TradeupSnapshots.tradeupId eq tradeupId) and
                 (TradeupSnapshots.snapshotTime greaterEq fromMs) and
                 (TradeupSnapshots.snapshotTime lessEq toMs)
             }
-            .groupBy(bucketStartExpr)
-            .orderBy(bucketStartExpr to SortOrder.ASC)
-            .map { row ->
+            .orderBy(TradeupSnapshots.snapshotTime to SortOrder.ASC)
+            .toList()
+            .groupBy { row -> (row[TradeupSnapshots.snapshotTime] / bucketMs) * bucketMs }
+            .map { (bucketStart, rows) ->
                 TradeUpHistoryPoint(
-                    bucketStart = row[bucketStartExpr],
-                    roi = row[avgRoiExpr] ?: 0.0,
-                    profit = row[avgProfitExpr] ?: 0.0,
-                    inputCost = row[avgInputCostExpr] ?: 0.0,
-                    outputCost = row[avgOutputCostExpr] ?: 0.0
+                    bucketStart = bucketStart,
+                    roi = rows.map { it[TradeupSnapshots.roi] }.takeIf { it.isNotEmpty() }?.average() ?: 0.0,
+                    profit = rows.map { it[TradeupSnapshots.profit] }.takeIf { it.isNotEmpty() }?.average() ?: 0.0,
+                    inputCost = rows.map { it[TradeupSnapshots.inputCost] }.takeIf { it.isNotEmpty() }?.average() ?: 0.0,
+                    outputCost = rows.map { it[TradeupSnapshots.outputCost] }.takeIf { it.isNotEmpty() }?.average() ?: 0.0
                 )
             }
     }
@@ -478,10 +469,10 @@ class TradeUpService(
                 rarity = rarityId?.let { raritiesById[it] },
                 stattrak = row[TradeupsMaster.stattrak],
                 outputFloat = row[TradeupsMaster.outputFloat],
-                roi = row[TradeupsCurrent.roi],
-                profit = row[TradeupsCurrent.profit],
-                inputCost = row[TradeupsCurrent.inputCost],
-                outputCost = row[TradeupsCurrent.outputCost],
+                roi = row.getOrNull(TradeupsCurrent.roi) ?: 0.0,
+                profit = row.getOrNull(TradeupsCurrent.profit) ?: 0.0,
+                inputCost = row.getOrNull(TradeupsCurrent.inputCost) ?: 0.0,
+                outputCost = row.getOrNull(TradeupsCurrent.outputCost) ?: 0.0,
                 inputs = inputsByResultId[resultId] ?: emptyList(),
                 outputs = outputsByResultId[resultId] ?: emptyList(),
                 createdAt = row[TradeupsMaster.createdAt]

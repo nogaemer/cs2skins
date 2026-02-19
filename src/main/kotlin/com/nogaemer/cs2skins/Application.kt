@@ -69,6 +69,12 @@ class SkinDatabaseInitializer {
             // Enable TimescaleDB extension
             exec("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE")
 
+            // SAFETY NOTE: WEEK_IN_MS and YEAR_IN_MS are Kotlin `const val` compile-time Long
+            // literals, not user-supplied input. String interpolation here embeds the numeric
+            // literal directly into the SQL text, which is safe and equivalent to writing the
+            // integer constant inline. Do NOT replace these with variables that could hold
+            // user-controlled values.
+
             // Convert skin_price_history to a hypertable partitioned by recorded_at
             // chunk_time_interval = 604800000 ms (1 week in epoch-milliseconds)
             exec(

@@ -70,8 +70,8 @@ class SkinController(private val skinService: SkinService) {
         @RequestParam(defaultValue = "100") pageSize: Int
     ): ResponseEntity<List<SkinPriceHistoryResponse>> {
         val now = System.currentTimeMillis()
-        val fromMs = if (from > 0L) from else null
-        val toMs = if (to > 0L) to else null
+        val fromMs = if (from > 0L) from else now - 30L * 24 * 60 * 60 * 1000
+        val toMs = if (to > 0L) to else now
         val history = skinService.getSkinPriceHistory(skinId, wearId, fromMs, toMs)
 
         val safePageSize = pageSize.coerceIn(1, MAX_PRICE_HISTORY_PAGE_SIZE)

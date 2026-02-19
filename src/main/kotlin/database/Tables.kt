@@ -88,8 +88,11 @@ object SkinPricesCurrent : Table("skin_prices_current") {
  * Historical price records per skin+wear (TimescaleDB hypertable on recorded_at).
  * Partitioned by week; stores one row per price snapshot event.
  * The recorded_at column holds epoch-milliseconds (BIGINT).
+ * A surrogate `seq` auto-increment is included in the primary key to guarantee
+ * uniqueness even when multiple snapshots are written within the same millisecond.
  */
 object SkinPriceHistory : Table("skin_price_history") {
+    val seq = integer("seq").autoIncrement()
     val skinId = varchar("skin_id", 255)
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val wearId = varchar("wear_id", 255)
@@ -98,8 +101,9 @@ object SkinPriceHistory : Table("skin_price_history") {
     val price = decimal("price", 10, 2).default(java.math.BigDecimal.ZERO)
     val quantity = integer("quantity").default(0)
 
-    // Composite primary key required for TimescaleDB hypertable
-    override val primaryKey = PrimaryKey(skinId, wearId, recordedAt)
+    // seq makes the key unique; recordedAt must be included to satisfy TimescaleDB's
+    // requirement that all UNIQUE/PK constraints include the partition column.
+    override val primaryKey = PrimaryKey(seq, recordedAt)
 
     init {
         index("idx_sph_skin_wear", false, skinId, wearId)
@@ -160,8 +164,11 @@ object TradeupsCurrent : Table("tradeups_current") {
 /**
  * Time-series snapshots of trade-up metrics (TimescaleDB hypertable on snapshot_time).
  * One row per calculation event. Partitioned by week (chunk_time_interval = 604800000 ms).
+ * A surrogate `snapshotSeq` auto-increment is included in the primary key to guarantee
+ * uniqueness even when multiple snapshots are written within the same millisecond.
  */
 object TradeupSnapshots : Table("tradeup_snapshots") {
+    val snapshotSeq = integer("snapshot_seq").autoIncrement()
     val tradeupId = integer("tradeup_id")
         .references(TradeupsMaster.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val snapshotTime = long("snapshot_time")
@@ -170,8 +177,9 @@ object TradeupSnapshots : Table("tradeup_snapshots") {
     val inputCost = double("input_cost")
     val outputCost = double("output_cost")
 
-    // Composite primary key required for TimescaleDB hypertable
-    override val primaryKey = PrimaryKey(tradeupId, snapshotTime)
+    // snapshotSeq makes the key unique; snapshotTime must be included to satisfy TimescaleDB's
+    // requirement that all UNIQUE/PK constraints include the partition column.
+    override val primaryKey = PrimaryKey(tradeupId, snapshotTime, snapshotSeq)
 
     init {
         // Index optimized for time-range queries on the hypertable
