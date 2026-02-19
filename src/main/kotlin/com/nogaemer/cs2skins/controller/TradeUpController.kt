@@ -1,5 +1,6 @@
 package com.nogaemer.cs2skins.controller
 
+import com.nogaemer.cs2skins.dto.PageResponse
 import com.nogaemer.cs2skins.dto.TradeUpFilterRequest
 import com.nogaemer.cs2skins.dto.TradeUpResultResponse
 import com.nogaemer.cs2skins.service.TradeUpService
@@ -23,7 +24,7 @@ class TradeUpController(private val tradeUpService: TradeUpService) {
     }
 
     @PostMapping("/filter")
-    suspend fun filterTradeUps(@RequestBody filter: TradeUpFilterRequest): ResponseEntity<List<TradeUpResultResponse>> {
+    suspend fun filterTradeUps(@RequestBody filter: TradeUpFilterRequest): ResponseEntity<PageResponse<TradeUpResultResponse>> {
         val tradeUps = tradeUpService.filterTradeUps(filter)
         return ResponseEntity.ok(tradeUps)
     }

@@ -244,7 +244,7 @@ class TradeUpService(
         else mapToTradeUpResponsesBulk(results).firstOrNull()
     }
 
-    suspend fun filterTradeUps(filter: TradeUpFilterRequest): List<TradeUpResultResponse> = dbQuery {
+    suspend fun filterTradeUps(filter: TradeUpFilterRequest): PageResponse<TradeUpResultResponse> = dbQuery {
         var query = TradeUpResults.selectAll()
 
         filter.minRoi?.let { minRoi ->
@@ -295,8 +295,30 @@ class TradeUpService(
             }
         }
 
-        val results = query.toList()
-        mapToTradeUpResponsesBulk(results)
+        // Count total results for pagination
+        val totalCount = query.count()
+        
+        // Apply pagination
+        val pageSize = if (filter.size > 0) filter.size else 20
+        val pageNumber = if (filter.page >= 0) filter.page else 0
+        val offset = pageNumber * pageSize
+        
+        val results = query.limit(pageSize, offset.toLong()).toList()
+        val content = mapToTradeUpResponsesBulk(results)
+        
+        val totalPages = ((totalCount + pageSize - 1) / pageSize).toInt()
+        
+        PageResponse(
+            content = content,
+            page = pageNumber,
+            size = pageSize,
+            totalElements = totalCount,
+            totalPages = totalPages,
+            isFirst = pageNumber == 0,
+            isLast = pageNumber >= totalPages - 1,
+            hasNext = pageNumber < totalPages - 1,
+            hasPrevious = pageNumber > 0
+        )
     }
 
     suspend fun deleteAllTradeUps(): Int = dbQuery {

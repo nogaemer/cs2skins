@@ -346,7 +346,7 @@ Retrieve a specific trade-up by its ID.
 ---
 
 ### Filter Trade-Ups
-Filter and sort trade-up opportunities based on various criteria.
+Filter and sort trade-up opportunities based on various criteria with pagination support.
 
 **Endpoint:** `POST /api/tradeups/filter`
 
@@ -360,7 +360,9 @@ Filter and sort trade-up opportunities based on various criteria.
   "stattrak": false,
   "rarityId": "rarity-restricted",
   "sortBy": "roi",
-  "sortDirection": "desc"
+  "sortDirection": "desc",
+  "page": 0,
+  "size": 20
 }
 ```
 
@@ -373,8 +375,60 @@ Filter and sort trade-up opportunities based on various criteria.
 - `rarityId` (string): Filter by input rarity
 - `sortBy` (string): Sort field - "roi", "profit", "inputCost", or "createdAt" (default: "roi")
 - `sortDirection` (string): Sort direction - "asc" or "desc" (default: "desc")
+- `page` (int): Page number, 0-indexed (default: 0)
+- `size` (int): Number of results per page (default: 20)
 
-**Response:** Array of `TradeUpResultResponse` objects
+**Response:** Paginated response with metadata
+```json
+{
+  "content": [
+    {
+      "id": 1,
+      "collectionA": {
+        "collectionId": "the-huntsman-collection",
+        "name": "The Huntsman Collection"
+      },
+      "collectionB": {
+        "collectionId": "the-chroma-collection",
+        "name": "The Chroma Collection"
+      },
+      "rarity": {
+        "rarityId": "rarity-restricted",
+        "name": "Restricted",
+        "colorHex": "8847FF"
+      },
+      "stattrak": false,
+      "outputFloat": 0.15,
+      "roi": 1.85,
+      "profit": 5.23,
+      "inputCost": 6.15,
+      "outputCost": 11.38,
+      "inputs": [...],
+      "outputs": [...],
+      "createdAt": 1708354800000
+    }
+  ],
+  "page": 0,
+  "size": 20,
+  "totalElements": 150,
+  "totalPages": 8,
+  "isFirst": true,
+  "isLast": false,
+  "hasNext": true,
+  "hasPrevious": false
+}
+```
+
+**Pagination Response Fields:**
+- `content`: Array of trade-up results for the current page
+- `page`: Current page number (0-indexed)
+- `size`: Number of items per page
+- `totalElements`: Total number of results across all pages
+- `totalPages`: Total number of pages
+- `isFirst`: True if this is the first page
+- `isLast`: True if this is the last page
+- `hasNext`: True if there is a next page
+- `hasPrevious`: True if there is a previous page
 
 ---
 

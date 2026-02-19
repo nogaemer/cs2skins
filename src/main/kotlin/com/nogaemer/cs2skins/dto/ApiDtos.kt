@@ -106,5 +106,20 @@ data class TradeUpFilterRequest(
     val stattrak: Boolean? = null,
     val rarityId: String? = null,
     val sortBy: String = "roi", // roi, profit, inputCost, createdAt
-    val sortDirection: String = "desc" // asc, desc
+    val sortDirection: String = "desc", // asc, desc
+    val page: Int = 0, // Page number (0-indexed)
+    val size: Int = 20 // Page size
+)
+
+// Pagination response wrapper
+data class PageResponse<T>(
+    val content: List<T>,
+    val page: Int,
+    val size: Int,
+    val totalElements: Long,
+    val totalPages: Int,
+    val isFirst: Boolean,
+    val isLast: Boolean,
+    val hasNext: Boolean,
+    val hasPrevious: Boolean
 )
