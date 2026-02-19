@@ -96,6 +96,15 @@ class SkinDatabaseInitializer {
                 )"""
             )
 
+            // Register an integer_now function (epoch-ms) for hypertables with integer time dim.
+            // TimescaleDB requires this before compression/retention policies can use integer durations.
+            exec(
+                """CREATE OR REPLACE FUNCTION now_ms() RETURNS BIGINT
+                   LANGUAGE SQL STABLE AS ${'$'}${'$'} SELECT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT ${'$'}${'$'}"""
+            )
+            exec("SELECT set_integer_now_func('skin_price_history', 'now_ms', replace_if_exists => TRUE)")
+            exec("SELECT set_integer_now_func('tradeup_snapshots', 'now_ms', replace_if_exists => TRUE)")
+
             // Enable compression on skin_price_history (compress chunks older than 7 days)
             exec(
                 """ALTER TABLE skin_price_history
