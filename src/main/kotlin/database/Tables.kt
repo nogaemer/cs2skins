@@ -129,10 +129,12 @@ object TradeupsMaster : Table("tradeups_master") {
     val stattrak = bool("stattrak").default(false)
     val skinAId = varchar("skin_a_id", 255)
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+        .nullable()
     val skinBId = varchar("skin_b_id", 255)
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
-    val amountA = integer("amount_a")
-    val amountB = integer("amount_b")
+        .nullable()
+    val amountA = integer("amount_a").nullable()
+    val amountB = integer("amount_b").nullable()
     val outputFloat = double("output_float")
     val createdAt = long("created_at").clientDefault { System.currentTimeMillis() }
 
@@ -143,6 +145,11 @@ object TradeupsMaster : Table("tradeups_master") {
         index("idx_tm_rarity", false, rarityId)
         index("idx_tm_collections", false, collectionAId, collectionBId)
         index("idx_tm_skins", false, skinAId, skinBId)
+        uniqueIndex(
+            "uniq_tm_identity",
+            collectionAId, collectionBId, rarityId, stattrak,
+            skinAId, skinBId, amountA, amountB, outputFloat
+        )
     }
 }
 
