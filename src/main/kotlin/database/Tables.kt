@@ -172,6 +172,11 @@ object TradeupSnapshots : Table("tradeup_snapshots") {
 
     // Composite primary key required for TimescaleDB hypertable
     override val primaryKey = PrimaryKey(tradeupId, snapshotTime)
+
+    init {
+        // Index optimized for time-range queries on the hypertable
+        index("idx_ts_snapshot_time", false, snapshotTime)
+    }
 }
 
 object TradeUpInputs : Table("tradeup_inputs") {
