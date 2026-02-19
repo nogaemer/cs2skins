@@ -112,7 +112,19 @@ class TradeUpOptimizer(
                     if (tradeUp.roiWithDropChange > 1.1 && tradeUp.inputCostWithDropChange < 10 && tradeUp.profitWithDropChange > 0.10 && outputFloat < 0.4) {
                         val aStr = "${tradeUp.input.tradeUpInputComponentA.amount}x ${tradeUp.input.tradeUpInputComponentA.skin.name} - ${tradeUp.input.costsFloatInput!!.floatA}"
                         val bStr = "${tradeUp.input.tradeUpInputComponentB.amount}x ${tradeUp.input.tradeUpInputComponentB.skin.name} - ${tradeUp.input.costsFloatInput.floatB}"
-                        logger.debug(String.format("%-60s %-60s float %-22s | roi %6.2f | profit %8.2f | rarity %s", aStr, bStr, outputFloat.toString(), tradeUp.roiWithDropChange, tradeUp.profitWithDropChange, rarityId))
+                        if (logger.isDebugEnabled) {
+                            logger.debug(
+                                String.format(
+                                    "%-60s %-60s float %-22s | roi %6.2f | profit %8.2f | rarity %s",
+                                    aStr,
+                                    bStr,
+                                    outputFloat.toString(),
+                                    tradeUp.roiWithDropChange,
+                                    tradeUp.profitWithDropChange,
+                                    rarityId
+                                )
+                            )
+                        }
                     }
                 }
             }
