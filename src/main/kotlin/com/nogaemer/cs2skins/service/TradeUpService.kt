@@ -226,28 +226,16 @@ class TradeUpService(
             it[TradeupSnapshots.outputCost] = outputCostValue
         }
 
-        // Upsert the latest metrics into tradeups_current
-        val currentExists = TradeupsCurrent.selectAll()
-            .where { TradeupsCurrent.tradeupId eq masterId }
-            .any()
-
-        if (currentExists) {
-            TradeupsCurrent.update({ TradeupsCurrent.tradeupId eq masterId }) {
-                it[TradeupsCurrent.roi] = roiValue
-                it[TradeupsCurrent.profit] = profitValue
-                it[TradeupsCurrent.inputCost] = inputCostValue
-                it[TradeupsCurrent.outputCost] = outputCostValue
-                it[TradeupsCurrent.updatedAt] = now
-            }
-        } else {
-            TradeupsCurrent.insert {
-                it[TradeupsCurrent.tradeupId] = masterId
-                it[TradeupsCurrent.roi] = roiValue
-                it[TradeupsCurrent.profit] = profitValue
-                it[TradeupsCurrent.inputCost] = inputCostValue
-                it[TradeupsCurrent.outputCost] = outputCostValue
-                it[TradeupsCurrent.updatedAt] = now
-            }
+        // Upsert the latest metrics into tradeups_current using ON CONFLICT (tradeupId)
+        TradeupsCurrent.upsert(
+            keys = arrayOf(TradeupsCurrent.tradeupId)
+        ) {
+            it[TradeupsCurrent.tradeupId] = masterId
+            it[TradeupsCurrent.roi] = roiValue
+            it[TradeupsCurrent.profit] = profitValue
+            it[TradeupsCurrent.inputCost] = inputCostValue
+            it[TradeupsCurrent.outputCost] = outputCostValue
+            it[TradeupsCurrent.updatedAt] = now
         }
     }
 
