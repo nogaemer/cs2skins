@@ -20,11 +20,10 @@ class SystemController(
 
     @PostMapping("/seed/collections")
     fun seedCollections(): ResponseEntity<JobStatusResponse> {
-        if (seedJobRunning.get()) {
+        if (!seedJobRunning.compareAndSet(false, true)) {
             return ResponseEntity.ok(JobStatusResponse("running", "Seed job is already running"))
         }
 
-        seedJobRunning.set(true)
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 seedService.seedCollections()
@@ -38,11 +37,10 @@ class SystemController(
 
     @PostMapping("/seed/skins")
     fun seedSkins(): ResponseEntity<JobStatusResponse> {
-        if (seedJobRunning.get()) {
+        if (!seedJobRunning.compareAndSet(false, true)) {
             return ResponseEntity.ok(JobStatusResponse("running", "Seed job is already running"))
         }
 
-        seedJobRunning.set(true)
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 seedService.seedSkins()
@@ -56,11 +54,10 @@ class SystemController(
 
     @PostMapping("/seed/all")
     fun seedAll(): ResponseEntity<JobStatusResponse> {
-        if (seedJobRunning.get()) {
+        if (!seedJobRunning.compareAndSet(false, true)) {
             return ResponseEntity.ok(JobStatusResponse("running", "Seed job is already running"))
         }
 
-        seedJobRunning.set(true)
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 seedService.seedAll()
@@ -76,11 +73,10 @@ class SystemController(
     fun calculateTradeUps(
         @RequestParam(defaultValue = "false") stattrak: Boolean
     ): ResponseEntity<JobStatusResponse> {
-        if (calculateJobRunning.get()) {
+        if (!calculateJobRunning.compareAndSet(false, true)) {
             return ResponseEntity.ok(JobStatusResponse("running", "Calculate job is already running"))
         }
 
-        calculateJobRunning.set(true)
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 tradeUpService.calculateAndSaveTradeUps(stattrak)
@@ -94,11 +90,10 @@ class SystemController(
 
     @PostMapping("/calculate/all")
     fun calculateAllTradeUps(): ResponseEntity<JobStatusResponse> {
-        if (calculateJobRunning.get()) {
+        if (!calculateJobRunning.compareAndSet(false, true)) {
             return ResponseEntity.ok(JobStatusResponse("running", "Calculate job is already running"))
         }
 
-        calculateJobRunning.set(true)
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 // Calculate for non-stattrak

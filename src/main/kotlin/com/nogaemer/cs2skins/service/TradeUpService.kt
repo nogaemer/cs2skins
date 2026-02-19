@@ -60,16 +60,18 @@ class TradeUpService(
         collectionA: models.CollectionWithSkins,
         collectionB: models.CollectionWithSkins,
         stattrak: Boolean
-    ): Int = dbQuery {
+    ): Int {
+        // Compute rarities and trade-ups OUTSIDE the transaction
         val rarities: List<String> = run {
             val order = listOf("Consumer Grade", "Industrial Grade", "Mil-Spec Grade", "Restricted", "Classified", "Covert")
             (collectionA.skins.keys intersect collectionB.skins.keys)
                 .sortedWith(compareBy<String> { s -> val idx = order.indexOf(s); if (idx == -1) Int.MAX_VALUE else idx })
                 .toList()
         }
-        if (rarities.isEmpty()) return@dbQuery 0
+        if (rarities.isEmpty()) return 0
 
-        var savedCount = 0
+        // Calculate all trade-ups first (CPU-intensive work outside transaction)
+        val tradeUpsToSave = mutableListOf<Pair<TradeUp, Pair<String, String>>>() // (TradeUp, (rarityName, actualRarityId))
 
         for (i in rarities.indices) {
             if (i + 1 >= rarities.size) continue
@@ -120,20 +122,36 @@ class TradeUpService(
                         tradeUpOutput
                     )
 
-                    // Save profitable trade-ups
+                    // Check if profitable
                     if (tradeUp.roiWithDropChange > MIN_ROI_THRESHOLD && 
                         tradeUp.inputCostWithDropChange < MAX_INPUT_COST && 
                         tradeUp.profitWithDropChange > MIN_PROFIT_THRESHOLD && 
                         outputFloat < MAX_OUTPUT_FLOAT) {
                         
-                        saveTradeUp(tradeUp, collectionA.collectionId, collectionB.collectionId, rarityId, stattrak)
-                        savedCount++
+                        tradeUpsToSave.add(tradeUp to (rarityId to rarityId))
                     }
                 }
             }
         }
 
-        savedCount
+        // Now save all results in a SHORT transaction
+        return dbQuery {
+            var savedCount = 0
+            tradeUpsToSave.forEach { (tradeUp, rarityInfo) ->
+                val (rarityName, _) = rarityInfo
+                // Resolve actual rarity ID from rarity name
+                val actualRarityId = Rarities
+                    .selectAll().where { Rarities.name eq rarityName }
+                    .limit(1)
+                    .singleOrNull()
+                    ?.get(Rarities.rarityId)
+                    ?: rarityName
+                
+                saveTradeUp(tradeUp, collectionA.collectionId, collectionB.collectionId, actualRarityId, stattrak)
+                savedCount++
+            }
+            savedCount
+        }
     }
 
     private fun saveTradeUp(
@@ -186,13 +204,20 @@ class TradeUpService(
         }
 
         // Insert output skins with probabilities
+        // Group outputs by collection to calculate correct per-skin probabilities
+        val outputsByCollection = tradeUp.output.skins.groupBy { it.collectionId }
+        
         tradeUp.output.skins.forEach { outputSkin ->
             // Calculate drop probability based on collection
             val ballotsFromA = if (tradeUp.input.tradeUpInputComponentA.collectionId == outputSkin.collectionId) 
                 tradeUp.input.tradeUpInputComponentA.amount else 0
             val ballotsFromB = if (tradeUp.input.tradeUpInputComponentB.collectionId == outputSkin.collectionId) 
                 tradeUp.input.tradeUpInputComponentB.amount else 0
-            val probability = (ballotsFromA + ballotsFromB) / 10.0
+            val totalBallotsForCollection = ballotsFromA + ballotsFromB
+            
+            // Probability = (ballots for this collection / 10) / (number of skins in this collection)
+            val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
+            val probability = (totalBallotsForCollection.toDouble() / 10.0) / skinsInCollection.toDouble()
             
             TradeUpOutputs.insert {
                 it[TradeUpOutputs.tradeUpResultId] = resultId

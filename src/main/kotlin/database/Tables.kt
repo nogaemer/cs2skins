@@ -97,7 +97,7 @@ object TradeUpResults : Table("tradeup_results") {
     val profit = double("profit")
     val inputCost = double("input_cost")
     val outputCost = double("output_cost")
-    val createdAt = long("created_at").default(System.currentTimeMillis())
+    val createdAt = long("created_at").clientDefault { System.currentTimeMillis() }
 
     override val primaryKey = PrimaryKey(id)
 

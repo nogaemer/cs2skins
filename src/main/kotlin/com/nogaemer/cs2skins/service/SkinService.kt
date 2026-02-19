@@ -24,32 +24,16 @@ class SkinService(
     }
 
     suspend fun searchSkins(filter: SkinFilterRequest): List<SkinResponse> = withContext(Dispatchers.IO) {
-        var skins = skinRepository.findAll()
+        // Use repository method that pushes filters to database
+        var skins = skinRepository.findWithFiltersAndPrices(
+            weaponId = filter.weaponId,
+            rarityId = filter.rarityId,
+            collectionId = filter.collectionId,
+            stattrak = filter.stattrak,
+            searchTerm = filter.searchTerm
+        )
 
-        filter.weaponId?.let { weaponId ->
-            skins = skins.filter { it.weapon.weaponId == weaponId }
-        }
-
-        filter.rarityId?.let { rarityId ->
-            skins = skins.filter { it.rarity.rarityId == rarityId }
-        }
-
-        filter.collectionId?.let { collectionId ->
-            skins = skins.filter { it.collectionId == collectionId }
-        }
-
-        filter.stattrak?.let { stattrak ->
-            skins = skins.filter { it.stattrak == stattrak }
-        }
-
-        filter.searchTerm?.let { term ->
-            skins = skins.filter { 
-                it.name.contains(term, ignoreCase = true) ||
-                it.weapon.name.contains(term, ignoreCase = true)
-            }
-        }
-
-        // Filter by price if provided
+        // Filter by price if provided (must be done in memory since it requires price aggregation)
         if (filter.minPrice != null || filter.maxPrice != null) {
             skins = skins.filter { skin ->
                 val prices = skin.price.values.map { it.price }
