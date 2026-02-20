@@ -1,18 +1,19 @@
 package com.nogaemer.cs2skins.service
 
 import com.nogaemer.cs2skins.dto.*
+import com.nogaemer.cs2skins.service.TradeUpService.Companion.PRICE_CALC_CHUNK_SIZE
 import database.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import tradeup.*
 import java.math.BigDecimal
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.time.measureTimedValue
 
 @Service
 class TradeUpService(
@@ -36,8 +37,8 @@ class TradeUpService(
         private const val MAX_INPUT_COST = 10.0    // Maximum input cost in currency units
         private const val MIN_PROFIT_THRESHOLD = 0.10  // Minimum profit in currency units
         private const val MAX_OUTPUT_FLOAT = 0.4   // Maximum acceptable output float value
-        private const val INSERT_CHUNK_SIZE = 1000
-        private const val PRICE_CALC_CHUNK_SIZE = 500
+        private const val INSERT_CHUNK_SIZE = 10000
+        private const val PRICE_CALC_CHUNK_SIZE = 5000
     }
 
     private suspend fun <T> dbQuery(block: suspend () -> T): T =
@@ -236,6 +237,18 @@ class TradeUpService(
             Rarities.selectAll().associate { it[Rarities.rarityId] to it[Rarities.name] }
         }
 
+        data class MasterChunkRow(
+            val id: Int,
+            val collectionAId: String,
+            val collectionBId: String,
+            val rarityId: String?,
+            val outputFloat: Double,
+            val skinAId: String?,
+            val skinBId: String?,
+            val amountA: Int?,
+            val amountB: Int?
+        )
+
         // Cache per-collection skin data to avoid redundant DB round-trips
         val collectionSkinsCache = mutableMapOf<String, models.CollectionWithSkins>()
 
@@ -253,28 +266,45 @@ class TradeUpService(
 
         // Cursor-based pagination: fetch PRICE_CALC_CHUNK_SIZE rows at a time
         while (true) {
-            val chunk = dbQuery {
-                TradeupsMaster.selectAll()
-                    .where {
-                        (TradeupsMaster.stattrak eq stattrak) and
-                        (TradeupsMaster.id greater lastId)
-                    }
-                    .orderBy(TradeupsMaster.id to SortOrder.ASC)
-                    .limit(PRICE_CALC_CHUNK_SIZE)
-                    .toList()
-            }
+
+            val (chunk, duration) = dbQuery {
+                measureTimedValue {
+                    TradeupsMaster.selectAll()
+                        .where {
+                            (TradeupsMaster.stattrak eq stattrak) and
+                                    (TradeupsMaster.id greater lastId)
+                        }
+                        .orderBy(TradeupsMaster.id to SortOrder.ASC)
+                        .limit(PRICE_CALC_CHUNK_SIZE)
+                        .map { row ->
+                            MasterChunkRow(
+                                id = row[TradeupsMaster.id],
+                                collectionAId = row[TradeupsMaster.collectionAId],
+                                collectionBId = row[TradeupsMaster.collectionBId],
+                                rarityId = row[TradeupsMaster.rarityId],
+                                outputFloat = row[TradeupsMaster.outputFloat],
+                                skinAId = row[TradeupsMaster.skinAId],
+                                skinBId = row[TradeupsMaster.skinBId],
+                                amountA = row[TradeupsMaster.amountA],
+                                amountB = row[TradeupsMaster.amountB],
+                            )
+                        }
+                }
+            }.let { it.value to it.duration }
+            logger.warn("Chunk query took ${duration.inWholeMilliseconds}ms")
+
             if (chunk.isEmpty()) break
 
             for (masterRow in chunk) {
-                val masterId = masterRow[TradeupsMaster.id]
-                val collectionAId = masterRow[TradeupsMaster.collectionAId]
-                val collectionBId = masterRow[TradeupsMaster.collectionBId]
-                val rarityId = masterRow[TradeupsMaster.rarityId] ?: continue
-                val targetOutputFloat = masterRow[TradeupsMaster.outputFloat]
-                val masterSkinAId = masterRow[TradeupsMaster.skinAId] ?: continue
-                val masterSkinBId = masterRow[TradeupsMaster.skinBId] ?: continue
-                val masterAmountA = masterRow[TradeupsMaster.amountA] ?: continue
-                val masterAmountB = masterRow[TradeupsMaster.amountB] ?: continue
+                val masterId = masterRow.id
+                val collectionAId = masterRow.collectionAId
+                val collectionBId = masterRow.collectionBId
+                val rarityId = masterRow.rarityId ?: continue
+                val targetOutputFloat = masterRow.outputFloat
+                val masterSkinAId = masterRow.skinAId ?: continue
+                val masterSkinBId = masterRow.skinBId ?: continue
+                val masterAmountA = masterRow.amountA ?: continue
+                val masterAmountB = masterRow.amountB ?: continue
 
                 val rarityName = rarityIdToName[rarityId] ?: continue
                 val rarityIdx = rarityOrder.indexOf(rarityName)
@@ -314,74 +344,82 @@ class TradeUpService(
                 val outputCostValue = tradeUp.expectedReturn.let { if (it.isFinite()) it else 0.0 }
                 val now = System.currentTimeMillis()
 
-                dbQuery {
-                    // Refresh input/output skin details with current prices
-                    TradeUpInputs.deleteWhere { TradeUpInputs.tradeUpResultId eq masterId }
-                    TradeUpOutputs.deleteWhere { TradeUpOutputs.tradeUpResultId eq masterId }
+                val (_, duration) = dbQuery {
+                    measureTimedValue {
+                        // Refresh input/output skin details with current prices
+                        TradeUpInputs.deleteWhere { TradeUpInputs.tradeUpResultId eq masterId }
+                        TradeUpOutputs.deleteWhere { TradeUpOutputs.tradeUpResultId eq masterId }
 
-                    TradeUpInputs.insert {
-                        it[tradeUpResultId] = masterId
-                        it[skinId] = tradeUp.input.tradeUpInputComponentA.skin.skinId
-                        it[skinName] = tradeUp.input.tradeUpInputComponentA.skin.name
-                        it[amount] = tradeUp.input.tradeUpInputComponentA.amount
-                        it[floatValue] = tradeUp.input.costsFloatInput?.floatA ?: 0.0
-                        it[pricePerUnit] = BigDecimal(tradeUp.input.tradeUpInputComponentA.skin.price.values.firstOrNull() ?: 0.0)
-                    }
-
-                    TradeUpInputs.insert {
-                        it[tradeUpResultId] = masterId
-                        it[skinId] = tradeUp.input.tradeUpInputComponentB.skin.skinId
-                        it[skinName] = tradeUp.input.tradeUpInputComponentB.skin.name
-                        it[amount] = tradeUp.input.tradeUpInputComponentB.amount
-                        it[floatValue] = tradeUp.input.costsFloatInput?.floatB ?: 0.0
-                        it[pricePerUnit] = BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
-                    }
-
-                    val outputsByCollection = tradeUp.output.skins.groupBy { it.collectionId }
-                    tradeUp.output.skins.forEach { outputSkin ->
-                        val ballotsFromA = if (tradeUp.input.tradeUpInputComponentA.collectionId == outputSkin.collectionId)
-                            tradeUp.input.tradeUpInputComponentA.amount else 0
-                        val ballotsFromB = if (tradeUp.input.tradeUpInputComponentB.collectionId == outputSkin.collectionId)
-                            tradeUp.input.tradeUpInputComponentB.amount else 0
-                        val totalBallotsForCollection = ballotsFromA + ballotsFromB
-                        val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
-                        val probability = (totalBallotsForCollection.toDouble() / 10.0) / skinsInCollection.toDouble()
-
-                        TradeUpOutputs.insert {
+                        TradeUpInputs.insert {
                             it[tradeUpResultId] = masterId
-                            it[skinId] = outputSkin.skinId
-                            it[skinName] = outputSkin.name
-                            it[TradeUpOutputs.probability] = probability
-                            it[floatValue] = outputSkin.float ?: 0.0
-                            it[price] = BigDecimal(outputSkin.price.values.firstOrNull() ?: 0.0)
+                            it[skinId] = tradeUp.input.tradeUpInputComponentA.skin.skinId
+                            it[skinName] = tradeUp.input.tradeUpInputComponentA.skin.name
+                            it[amount] = tradeUp.input.tradeUpInputComponentA.amount
+                            it[floatValue] = tradeUp.input.costsFloatInput?.floatA ?: 0.0
+                            it[pricePerUnit] =
+                                BigDecimal(tradeUp.input.tradeUpInputComponentA.skin.price.values.firstOrNull() ?: 0.0)
                         }
-                    }
 
-                    TradeupSnapshots.insert {
-                        it[tradeupId] = masterId
-                        it[snapshotTime] = now
-                        it[roi] = roiValue
-                        it[profit] = profitValue
-                        it[inputCost] = inputCostValue
-                        it[outputCost] = outputCostValue
-                    }
+                        TradeUpInputs.insert {
+                            it[tradeUpResultId] = masterId
+                            it[skinId] = tradeUp.input.tradeUpInputComponentB.skin.skinId
+                            it[skinName] = tradeUp.input.tradeUpInputComponentB.skin.name
+                            it[amount] = tradeUp.input.tradeUpInputComponentB.amount
+                            it[floatValue] = tradeUp.input.costsFloatInput?.floatB ?: 0.0
+                            it[pricePerUnit] =
+                                BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
+                        }
 
-                    TradeupsCurrent.upsert(keys = arrayOf(TradeupsCurrent.tradeupId)) {
-                        it[tradeupId] = masterId
-                        it[roi] = roiValue
-                        it[profit] = profitValue
-                        it[inputCost] = inputCostValue
-                        it[outputCost] = outputCostValue
-                        it[updatedAt] = now
-                    }
-                }
+                        val outputsByCollection = tradeUp.output.skins.groupBy { it.collectionId }
+                        tradeUp.output.skins.forEach { outputSkin ->
+                            val ballotsFromA =
+                                if (tradeUp.input.tradeUpInputComponentA.collectionId == outputSkin.collectionId)
+                                    tradeUp.input.tradeUpInputComponentA.amount else 0
+                            val ballotsFromB =
+                                if (tradeUp.input.tradeUpInputComponentB.collectionId == outputSkin.collectionId)
+                                    tradeUp.input.tradeUpInputComponentB.amount else 0
+                            val totalBallotsForCollection = ballotsFromA + ballotsFromB
+                            val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
+                            val probability =
+                                (totalBallotsForCollection.toDouble() / 10.0) / skinsInCollection.toDouble()
 
-                processedCount++
-                calculatePricesProcessed.incrementAndGet()
+                            TradeUpOutputs.insert {
+                                it[tradeUpResultId] = masterId
+                                it[skinId] = outputSkin.skinId
+                                it[skinName] = outputSkin.name
+                                it[TradeUpOutputs.probability] = probability
+                                it[floatValue] = outputSkin.float ?: 0.0
+                                it[price] = BigDecimal(outputSkin.price.values.firstOrNull() ?: 0.0)
+                            }
+                        }
+
+                        TradeupSnapshots.insert {
+                            it[tradeupId] = masterId
+                            it[snapshotTime] = now
+                            it[roi] = roiValue
+                            it[profit] = profitValue
+                            it[inputCost] = inputCostValue
+                            it[outputCost] = outputCostValue
+                        }
+
+                        TradeupsCurrent.upsert(keys = arrayOf(TradeupsCurrent.tradeupId)) {
+                            it[tradeupId] = masterId
+                            it[roi] = roiValue
+                            it[profit] = profitValue
+                            it[inputCost] = inputCostValue
+                            it[outputCost] = outputCostValue
+                            it[updatedAt] = now
+                        }
+
+                        processedCount++
+                        calculatePricesProcessed.incrementAndGet()
+                    }
+                }.let { it.value to it.duration }
+                logger.warn("Master $masterId price calculation and save took ${duration.inWholeMilliseconds}ms")
+
+                lastId = chunk.last().id
+                if (chunk.size < PRICE_CALC_CHUNK_SIZE) break
             }
-
-            lastId = chunk.last()[TradeupsMaster.id]
-            if (chunk.size < PRICE_CALC_CHUNK_SIZE) break
         }
 
         processedCount
@@ -471,7 +509,7 @@ class TradeUpService(
                     .singleOrNull()
                     ?.get(Rarities.rarityId)
                     ?: rarityName
-                
+
                 saveTradeUp(tradeUp, collectionA.collectionId, collectionB.collectionId, actualRarityId, stattrak)
                 savedCount++
             }
@@ -487,9 +525,9 @@ class TradeUpService(
         stattrak: Boolean
     ) {
         // Calculate average float from input components
-        val avgFloat = ((tradeUp.input.costsFloatInput?.floatA ?: 0.0) * tradeUp.input.tradeUpInputComponentA.amount + 
+        val avgFloat = ((tradeUp.input.costsFloatInput?.floatA ?: 0.0) * tradeUp.input.tradeUpInputComponentA.amount +
                         (tradeUp.input.costsFloatInput?.floatB ?: 0.0) * tradeUp.input.tradeUpInputComponentB.amount) / 10.0
-        
+
         // Extract values safely
         val roiValue: Double = tradeUp.roiWithDropChange.let { if (it.isFinite()) it else 0.0 }
         val profitValue: Double = tradeUp.profitWithDropChange.let { if (it.isFinite()) it else 0.0 }
@@ -531,17 +569,17 @@ class TradeUpService(
 
         // Insert output skins with probabilities
         val outputsByCollection = tradeUp.output.skins.groupBy { it.collectionId }
-        
+
         tradeUp.output.skins.forEach { outputSkin ->
-            val ballotsFromA = if (tradeUp.input.tradeUpInputComponentA.collectionId == outputSkin.collectionId) 
+            val ballotsFromA = if (tradeUp.input.tradeUpInputComponentA.collectionId == outputSkin.collectionId)
                 tradeUp.input.tradeUpInputComponentA.amount else 0
-            val ballotsFromB = if (tradeUp.input.tradeUpInputComponentB.collectionId == outputSkin.collectionId) 
+            val ballotsFromB = if (tradeUp.input.tradeUpInputComponentB.collectionId == outputSkin.collectionId)
                 tradeUp.input.tradeUpInputComponentB.amount else 0
             val totalBallotsForCollection = ballotsFromA + ballotsFromB
-            
+
             val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
             val probability = (totalBallotsForCollection.toDouble() / 10.0) / skinsInCollection.toDouble()
-            
+
             TradeUpOutputs.insert {
                 it[TradeUpOutputs.tradeUpResultId] = masterId
                 it[TradeUpOutputs.skinId] = outputSkin.skinId
@@ -591,7 +629,7 @@ class TradeUpService(
             .selectAll()
             .where { TradeupsMaster.id eq id }
             .toList()
-        
+
         if (results.isEmpty()) null
         else mapToTradeUpResponsesBulk(results).firstOrNull()
     }
@@ -652,17 +690,17 @@ class TradeUpService(
 
         // Count total results for pagination
         val totalCount = query.count()
-        
+
         // Apply pagination
         val pageSize = if (filter.size > 0) filter.size else 20
         val pageNumber = if (filter.page >= 0) filter.page else 0
         val offset = pageNumber * pageSize
-        
+
         val results = query.limit(pageSize, offset.toLong()).toList()
         val content = mapToTradeUpResponsesBulk(results)
-        
+
         val totalPages = ((totalCount + pageSize - 1) / pageSize).toInt()
-        
+
         PageResponse(
             content = content,
             page = pageNumber,
@@ -728,9 +766,9 @@ class TradeUpService(
      */
     private fun mapToTradeUpResponsesBulk(results: List<ResultRow>): List<TradeUpResultResponse> {
         if (results.isEmpty()) return emptyList()
-        
+
         val resultIds = results.map { it[TradeupsMaster.id] }
-        
+
         // Fetch all inputs in one query
         val inputsByResultId = TradeUpInputs.selectAll()
             .where { TradeUpInputs.tradeUpResultId inList resultIds }
@@ -744,7 +782,7 @@ class TradeUpService(
                 )
             }
             .groupBy({ it.first }, { it.second })
-        
+
         // Fetch all outputs in one query
         val outputsByResultId = TradeUpOutputs.selectAll()
             .where { TradeUpOutputs.tradeUpResultId inList resultIds }
@@ -758,27 +796,27 @@ class TradeUpService(
                 )
             }
             .groupBy({ it.first }, { it.second })
-        
+
         // Fetch all unique collections in one query
-        val collectionIds = results.flatMap { 
-            listOf(it[TradeupsMaster.collectionAId], it[TradeupsMaster.collectionBId]) 
+        val collectionIds = results.flatMap {
+            listOf(it[TradeupsMaster.collectionAId], it[TradeupsMaster.collectionBId])
         }.distinct()
-        
+
         val collectionsById = Collections.selectAll()
             .where { Collections.collectionId inList collectionIds }
-            .associate { 
+            .associate {
                 it[Collections.collectionId] to CollectionInfo(
-                    it[Collections.collectionId], 
+                    it[Collections.collectionId],
                     it[Collections.name]
                 )
             }
-        
+
         // Fetch all unique rarities in one query
         val rarityIds = results.mapNotNull { it[TradeupsMaster.rarityId] }.distinct()
         val raritiesById = if (rarityIds.isNotEmpty()) {
             Rarities.selectAll()
                 .where { Rarities.rarityId inList rarityIds }
-                .associate { 
+                .associate {
                     it[Rarities.rarityId] to RarityInfo(
                         it[Rarities.rarityId],
                         it[Rarities.name],
@@ -788,19 +826,19 @@ class TradeUpService(
         } else {
             emptyMap()
         }
-        
+
         // Now map each result using the pre-fetched data
         return results.map { row ->
             val resultId = row[TradeupsMaster.id]
             val collectionAId = row[TradeupsMaster.collectionAId]
             val collectionBId = row[TradeupsMaster.collectionBId]
             val rarityId = row[TradeupsMaster.rarityId]
-            
+
             TradeUpResultResponse(
                 id = resultId,
-                collectionA = collectionsById[collectionAId] 
+                collectionA = collectionsById[collectionAId]
                     ?: CollectionInfo(collectionAId, collectionAId),
-                collectionB = collectionsById[collectionBId] 
+                collectionB = collectionsById[collectionBId]
                     ?: CollectionInfo(collectionBId, collectionBId),
                 rarity = rarityId?.let { raritiesById[it] },
                 stattrak = row[TradeupsMaster.stattrak],
