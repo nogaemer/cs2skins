@@ -235,6 +235,7 @@ object TradeUpOutputs : Table("tradeup_outputs") {
 
     init {
         index("idx_tradeup_output_result", false, tradeUpResultId)
+        uniqueIndex("uniq_tuo_master_skin", tradeUpResultId, skinId)
     }
 }
 

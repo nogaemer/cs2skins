@@ -105,29 +105,12 @@ class TradeUpService(
             .toList()
         if (commonRarities.isEmpty()) return 0
 
-        // Fetch all existing masters for this collection pair in one query to avoid per-row round-trips
-        // Key: (rarityId, skinAId, skinBId, amountA, outputFloat)
-        val existingKeys: Set<String> = dbQuery {
-            TradeupsMaster.selectAll()
-                .where {
-                    (TradeupsMaster.collectionAId eq collectionA.collectionId) and
-                    (TradeupsMaster.collectionBId eq collectionB.collectionId) and
-                    (TradeupsMaster.stattrak eq stattrak)
-                }
-                .map { row ->
-                    masterKey(
-                        row[TradeupsMaster.rarityId],
-                        row[TradeupsMaster.skinAId],
-                        row[TradeupsMaster.skinBId],
-                        row[TradeupsMaster.amountA],
-                        row[TradeupsMaster.outputFloat]
-                    )
-                }
-                .toHashSet()
-        }
-
         var insertedCount = 0
         val toInsert = mutableListOf<Array<Any?>>() // collect rows to batch-insert
+
+        // Map from masterKey to pre-computed output rows (without masterId)
+        // Each output row: [skinId, skinName, probability, floatValue, price]
+        val outputsByMasterKey = mutableMapOf<String, List<Array<Any?>>>()
 
         for (i in commonRarities.indices) {
             if (i + 1 >= commonRarities.size) continue
@@ -148,18 +131,35 @@ class TradeUpService(
             val rarityId = rarityNameToId[inputRarityName]
 
             for (outputFloat in outputFloats) {
+                val tradeUpOutput = optimizer.calculateTradeUpOutputDTO(outputSkins, outputFloat)
+                val outputsByCollection = tradeUpOutput.skins.groupBy { it.collectionId }
+
                 for (j in 1..9) {
                     skinsA.forEach { skinA ->
                         skinsB.forEach { skinB ->
                             val key = masterKey(rarityId, skinA.skinId, skinB.skinId, j, outputFloat)
-                            if (key !in existingKeys) {
-                                toInsert.add(arrayOf(
-                                    collectionA.collectionId, collectionB.collectionId,
-                                    rarityId, stattrak,
-                                    skinA.skinId, skinB.skinId,
-                                    j, 10 - j,
-                                    outputFloat
-                                ))
+                            toInsert.add(arrayOf(
+                                collectionA.collectionId, collectionB.collectionId,
+                                rarityId, stattrak,
+                                skinA.skinId, skinB.skinId,
+                                j, 10 - j,
+                                outputFloat
+                            ))
+
+                            // Pre-compute output rows for this master
+                            outputsByMasterKey[key] = tradeUpOutput.skins.map { outputSkin ->
+                                val ballotsFromA = if (collectionA.collectionId == outputSkin.collectionId) j else 0
+                                val ballotsFromB = if (collectionB.collectionId == outputSkin.collectionId) 10 - j else 0
+                                val totalBallots = ballotsFromA + ballotsFromB
+                                val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
+                                val probability = (totalBallots.toDouble() / 10.0) / skinsInCollection.toDouble()
+                                arrayOf<Any?>(
+                                    outputSkin.skinId,
+                                    outputSkin.name,
+                                    probability,
+                                    outputSkin.float ?: 0.0,
+                                    BigDecimal(outputSkin.price.values.firstOrNull() ?: 0.0)
+                                )
                             }
                         }
                     }
@@ -168,10 +168,11 @@ class TradeUpService(
         }
 
         if (toInsert.isNotEmpty()) {
-            val (_, duration) = dbQuery {
+            val (_, masterDuration) = dbQuery {
                 measureTimedValue {
                     toInsert.chunked(INSERT_CHUNK_SIZE).forEach { chunk ->
-                        TradeupsMaster.batchInsert(chunk) { row ->
+                        // ignore = true → ON CONFLICT DO NOTHING; avoids a pre-check SELECT per pair
+                        TradeupsMaster.batchInsert(chunk, ignore = true) { row ->
                             this[TradeupsMaster.collectionAId] = row[0] as String
                             this[TradeupsMaster.collectionBId] = row[1] as String
                             this[TradeupsMaster.rarityId] = row[2] as String?
@@ -185,8 +186,55 @@ class TradeUpService(
                     }
                 }
             }.let { it.value to it.duration }
-            logger.warn("Batch insert of ${toInsert.size} rows took ${duration.inWholeMilliseconds}ms")
+            logger.warn("Batch insert of ${toInsert.size} masters took ${masterDuration.inWholeMilliseconds}ms")
             insertedCount = toInsert.size
+
+            // Fetch master IDs for this collection pair so we can link outputs to them
+            val masterIdByKey: Map<String, Int> = dbQuery {
+                TradeupsMaster.selectAll()
+                    .where {
+                        (TradeupsMaster.collectionAId eq collectionA.collectionId) and
+                        (TradeupsMaster.collectionBId eq collectionB.collectionId) and
+                        (TradeupsMaster.stattrak eq stattrak)
+                    }
+                    .associate { row ->
+                        masterKey(
+                            row[TradeupsMaster.rarityId],
+                            row[TradeupsMaster.skinAId],
+                            row[TradeupsMaster.skinBId],
+                            row[TradeupsMaster.amountA],
+                            row[TradeupsMaster.outputFloat]
+                        ) to row[TradeupsMaster.id]
+                    }
+            }
+
+            // Build output rows with resolved master IDs and batch-insert them
+            val outputsToInsert = mutableListOf<Array<Any?>>()
+            for ((key, outputRows) in outputsByMasterKey) {
+                val masterId = masterIdByKey[key] ?: continue
+                outputRows.forEach { row ->
+                    outputsToInsert.add(arrayOf(masterId, row[0], row[1], row[2], row[3], row[4]))
+                }
+            }
+
+            if (outputsToInsert.isNotEmpty()) {
+                val (_, outputDuration) = dbQuery {
+                    measureTimedValue {
+                        outputsToInsert.chunked(INSERT_CHUNK_SIZE).forEach { chunk ->
+                            // ignore = true skips duplicates on re-runs (unique index on tradeUpResultId+skinId)
+                            TradeUpOutputs.batchInsert(chunk, ignore = true) { row ->
+                                this[TradeUpOutputs.tradeUpResultId] = row[0] as Int
+                                this[TradeUpOutputs.skinId] = row[1] as String
+                                this[TradeUpOutputs.skinName] = row[2] as String
+                                this[TradeUpOutputs.probability] = row[3] as Double
+                                this[TradeUpOutputs.floatValue] = row[4] as Double
+                                this[TradeUpOutputs.price] = row[5] as BigDecimal
+                            }
+                        }
+                    }
+                }.let { it.value to it.duration }
+                logger.warn("Batch insert of ${outputsToInsert.size} outputs took ${outputDuration.inWholeMilliseconds}ms")
+            }
         }
 
         return insertedCount
