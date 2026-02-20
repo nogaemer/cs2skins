@@ -83,39 +83,34 @@ class SeedDB {
             val stattrak = skin.optBoolean("stattrak", false)
             val stattrackSkinId = skin.getString("id") + "_stattrak"
 
-            skinRepo.create(
-                SkinDTO(
-                    skinId = skin.getString("id"),
-                    collectionId = collectionId,
-                    name = skin.getString("name"),
-                    weapon = weapon,
-                    patternId = skin.optJSONObject("pattern")?.optString("id", null),
-                    patternName = skin.optJSONObject("pattern")?.optString("name", null),
-                    minFloat = if (skin.has("min_float") && !skin.isNull("min_float")) skin.getDouble("min_float") else 0.0,
-                    maxFloat = if (skin.has("max_float") && !skin.isNull("max_float")) skin.getDouble("max_float") else 0.0,
-                    rarity = rarity,
-                    stattrak = false,
-                    image = skin.optString("image", null)
-                )
+            val baseSkinDTO = SkinDTO(
+                skinId = skin.getString("id"),
+                collectionId = collectionId,
+                name = skin.getString("name"),
+                weapon = weapon,
+                patternId = skin.optJSONObject("pattern")?.optString("id", null),
+                patternName = skin.optJSONObject("pattern")?.optString("name", null),
+                minFloat = if (skin.has("min_float") && !skin.isNull("min_float")) skin.getDouble("min_float") else 0.0,
+                maxFloat = if (skin.has("max_float") && !skin.isNull("max_float")) skin.getDouble("max_float") else 0.0,
+                rarity = rarity,
+                stattrak = false,
+                image = skin.optString("image", null)
             )
 
-            skinRepo.create(
-                SkinDTO(
-                    skinId = stattrackSkinId,
-                    collectionId = collectionId,
-                    name = skin.getString("name"),
-                    weapon = weapon,
-                    patternId = skin.optJSONObject("pattern")?.optString("id", null),
-                    patternName = skin.optJSONObject("pattern")?.optString("name", null),
-                    minFloat = if (skin.has("min_float") && !skin.isNull("min_float")) skin.getDouble("min_float") else 0.0,
-                    maxFloat = if (skin.has("max_float") && !skin.isNull("max_float")) skin.getDouble("max_float") else 0.0,
-                    rarity = rarity,
-                    stattrak = true,
-                    image = skin.optString("image", null)
+            val skinDTOs = mutableListOf(baseSkinDTO)
+            if (stattrak) {
+                skinDTOs.add(
+                    baseSkinDTO.copy(
+                        skinId = stattrackSkinId,
+                        stattrak = true
+                    )
                 )
-            )
+            }
+            skinRepo.createAll(skinDTOs)
 
             val wears = skin.optJSONArray("wears") ?: continue
+            val skinPrices = mutableListOf<SkinPrice>()
+
             for (i in 0 until wears.length()) {
 
                 val wear = wears.optJSONObject(i) ?: continue
@@ -128,7 +123,7 @@ class SeedDB {
                 val wearId = wear.getString("name").lowercase().replace(" ", "_").replace("-", "_")
                 val wearCondition = WearCondition(wearId, wear.getString("name"))
 
-                priceRepo.create(
+                skinPrices.add(
                     SkinPrice(
                         skinId = skin.getString("id"),
                         wear = wearCondition,
@@ -137,16 +132,18 @@ class SeedDB {
                     )
                 )
 
-                if (!stattrak) continue
-                priceRepo.create(
-                    SkinPrice(
-                        skinId = stattrackSkinId,
-                        wear = wearCondition,
-                        price = BigDecimal(price),
-                        quantity = weekSales,
+                if (stattrak) {
+                    skinPrices.add(
+                        SkinPrice(
+                            skinId = stattrackSkinId,
+                            wear = wearCondition,
+                            price = BigDecimal(price),
+                            quantity = weekSales,
+                        )
                     )
-                )
+                }
             }
+            priceRepo.createAll(skinPrices)
         }
     }
 

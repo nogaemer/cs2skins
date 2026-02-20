@@ -2,7 +2,6 @@ package database
 
 import kotlinx.coroutines.Dispatchers
 import org.jetbrains.exposed.sql.*
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 
 class SkinPriceRepository : SkinPriceRepositoryInterface {
@@ -49,6 +48,30 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
 
         skinPrice
     }
+
+    override suspend fun createAll(skinPrices: List<SkinPrice>) = dbQuery {
+        val now = System.currentTimeMillis()
+        skinPrices.forEach { skinPrice ->
+            val wearId = ensureWearExists(skinPrice.wear)
+
+            SkinPricesCurrent.upsert {
+                it[SkinPricesCurrent.skinId] = skinPrice.skinId
+                it[SkinPricesCurrent.wearId] = wearId
+                it[SkinPricesCurrent.price] = skinPrice.price
+                it[SkinPricesCurrent.quantity] = skinPrice.quantity
+                it[SkinPricesCurrent.updatedAt] = now
+            }
+
+            SkinPriceHistory.insert {
+                it[SkinPriceHistory.skinId] = skinPrice.skinId
+                it[SkinPriceHistory.wearId] = wearId
+                it[SkinPriceHistory.recordedAt] = now
+                it[SkinPriceHistory.price] = skinPrice.price
+                it[SkinPriceHistory.quantity] = skinPrice.quantity
+            }
+        }
+    }
+
 
     override suspend fun findBySkin(skinId: String): List<SkinPrice> = dbQuery {
         val rows = SkinPricesCurrent.selectAll().where { SkinPricesCurrent.skinId eq skinId }.toList()
@@ -175,6 +198,7 @@ data class SkinPriceHistoryPoint(
 
 interface SkinPriceRepositoryInterface {
     suspend fun create(skinPrice: SkinPrice): SkinPrice
+    suspend fun createAll(skinPrices: List<SkinPrice>)
     suspend fun findBySkin(skinId: String): List<SkinPrice>
     suspend fun findBySkinAndWear(skinId: String, wearId: String): SkinPrice?
     suspend fun findWithWearCondition(skinId: String): List<PriceWithWear>

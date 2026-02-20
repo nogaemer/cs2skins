@@ -53,6 +53,25 @@ class SkinRepository : SkinRepositoryInterface {
         skinDTO
     }
 
+    override suspend fun createAll(skinDTOs: List<SkinDTO>) = dbQuery {
+        skinDTOs.forEach { skinDTO ->
+            Skins.insert {
+                it[skinId] = skinDTO.skinId
+                it[collectionId] = skinDTO.collectionId
+                it[name] = skinDTO.name
+                it[weaponId] = ensureWeaponExists(skinDTO.weapon)
+                it[patternId] = skinDTO.patternId
+                it[patternName] = skinDTO.patternName
+                it[minFloat] = skinDTO.minFloat
+                it[maxFloat] = skinDTO.maxFloat
+                it[rarityId] = ensureRarityExists(skinDTO.rarity)
+                it[stattrak] = skinDTO.stattrak
+                it[image] = skinDTO.image
+            }
+        }
+    }
+
+
     override suspend fun findById(skinId: String): SkinDTO? = dbQuery {
         Skins.selectAll().where { Skins.skinId eq skinId }
             .map { rowToSkin(it) }
@@ -261,6 +280,7 @@ class SkinRepository : SkinRepositoryInterface {
 
 interface SkinRepositoryInterface {
     suspend fun create(skinDTO: SkinDTO): SkinDTO
+    suspend fun createAll(skinDTOs: List<SkinDTO>)
     suspend fun findById(skinId: String): SkinDTO?
     suspend fun findAll(): List<SkinDTO>
     suspend fun findByCollection(collectionId: String): List<SkinDTO>

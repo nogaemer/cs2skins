@@ -92,39 +92,4 @@ class AsyncJobService(
             }
         }
     }
-
-    @Async("taskExecutor")
-    fun calculateTradeUpsAsync(stattrak: Boolean): CompletableFuture<Void> {
-        return CompletableFuture.runAsync {
-            try {
-                logger.info("Starting trade-up calculation job (stattrak: $stattrak)")
-                runBlocking {
-                    tradeUpService.calculateAndSaveTradeUps(stattrak)
-                }
-                logger.info("Trade-up calculation job completed successfully")
-            } catch (e: Exception) {
-                logger.error("Trade-up calculation job failed", e)
-                throw e
-            }
-        }
-    }
-
-    @Async("taskExecutor")
-    fun calculateAllTradeUpsAsync(): CompletableFuture<Void> {
-        return CompletableFuture.runAsync {
-            try {
-                logger.info("Starting full trade-up calculation job (non-stattrak + stattrak)")
-                runBlocking {
-                    // Calculate for non-stattrak
-                    tradeUpService.calculateAndSaveTradeUps(false)
-                    // Calculate for stattrak
-                    tradeUpService.calculateAndSaveTradeUps(true)
-                }
-                logger.info("Full trade-up calculation job completed successfully")
-            } catch (e: Exception) {
-                logger.error("Full trade-up calculation job failed", e)
-                throw e
-            }
-        }
-    }
 }
