@@ -222,21 +222,28 @@ object TradeUpInputs : Table("tradeup_inputs") {
 
 object TradeUpOutputs : Table("tradeup_outputs") {
     val id = integer("id").autoIncrement()
-    val tradeUpResultId = integer("tradeup_result_id")
-        .references(TradeupsMaster.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
-
     val skinId = varchar("skin_id", 255)
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
-    val skinName = varchar("skin_name", 255)
     val probability = double("probability")
     val floatValue = double("float_value")
-    val price = decimal("price", 10, 2)
 
     override val primaryKey = PrimaryKey(id)
 
     init {
-        index("idx_tradeup_output_result", false, tradeUpResultId)
-        uniqueIndex("uniq_tuo_master_skin", tradeUpResultId, skinId)
+        uniqueIndex("uniq_tuo_skin_prob_float", skinId, probability, floatValue)
+    }
+}
+
+object TradeupMasterOutputs : Table("tradeup_master_outputs") {
+    val tradeupMasterId = integer("tradeup_master_id")
+        .references(TradeupsMaster.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+    val tradeupOutputId = integer("tradeup_output_id")
+        .references(TradeUpOutputs.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+
+    override val primaryKey = PrimaryKey(tradeupMasterId, tradeupOutputId)
+
+    init {
+        index("idx_tmo_output", false, tradeupOutputId)
     }
 }
 
