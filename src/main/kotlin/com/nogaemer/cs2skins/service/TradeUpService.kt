@@ -56,24 +56,17 @@ class TradeUpService(
      * This bypasses Exposed's single-row RETURNING logic and allows reWriteBatchedInserts=true
      * to merge all rows into a single multi-row INSERT statement.
      *
-     * @param outputsToInsert List of output rows: [tradeUpResultId, skinId, skinName, probability, floatValue, price]
+     * @param outputsToInsert List of output rows: [id, skinId, probability, floatValue]
      */
     private suspend fun batchInsertOutputs(outputsToInsert: List<Array<Any?>>) = withContext(Dispatchers.IO) {
         val tsvData = StringBuilder()
         for (row in outputsToInsert) {
-            val masterId = row[0] as Int
+            val id = row[0] as Int
             val skinId = row[1] as String
-            val skinName = row[2] as String
-            val probability = row[3] as Double
-            val floatValue = row[4] as Double
-            // We handle BigDecimal vs Double for price just in case
-            val price = when (val p = row[5]) {
-                is BigDecimal -> p.toPlainString()
-                is Double -> p.toString()
-                else -> "0.0"
-            }
+            val probability = row[2] as Double
+            val floatValue = row[3] as Double
 
-            tsvData.append("$masterId\t$skinId\t$skinName\t$probability\t$floatValue\t$price\n")
+            tsvData.append("$id\t$skinId\t$probability\t$floatValue\n")
         }
 
         jdbcTemplate.execute { conn: Connection ->
@@ -81,7 +74,34 @@ class TradeUpService(
             val copyManager = CopyManager(pgConn)
 
             val sql =
-                "COPY tradeup_outputs (tradeup_result_id, skin_id, skin_name, probability, float_value, price) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')"
+                "COPY tradeup_outputs (id, skin_id, probability, float_value) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')"
+
+            StringReader(tsvData.toString()).use { reader ->
+                copyManager.copyIn(sql, reader)
+            }
+            null
+        }
+    }
+
+    /**
+     * Batch insert master-output junction entries using JdbcTemplate COPY.
+     *
+     * @param junctionsToInsert List of junction rows: [tradeupMasterId, tradeupOutputId]
+     */
+    private suspend fun batchInsertMasterOutputs(junctionsToInsert: List<Array<Any?>>) = withContext(Dispatchers.IO) {
+        val tsvData = StringBuilder()
+        for (row in junctionsToInsert) {
+            val masterId = row[0] as Int
+            val outputId = row[1] as Int
+            tsvData.append("$masterId\t$outputId\n")
+        }
+
+        jdbcTemplate.execute { conn: Connection ->
+            val pgConn = conn.unwrap(BaseConnection::class.java)
+            val copyManager = CopyManager(pgConn)
+
+            val sql =
+                "COPY tradeup_master_outputs (tradeup_master_id, tradeup_output_id) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')"
 
             StringReader(tsvData.toString()).use { reader ->
                 copyManager.copyIn(sql, reader)
@@ -149,7 +169,7 @@ class TradeUpService(
     suspend fun generateMasterDefinitions(stattrak: Boolean = false): Int = withContext(Dispatchers.IO) {
         // 1. Instantly wipe the tables before rebuilding to avoid conflicts
         dbQuery {
-            jdbcTemplate.execute("TRUNCATE TABLE tradeups_master RESTART IDENTITY CASCADE")
+            jdbcTemplate.execute("TRUNCATE TABLE tradeup_master_outputs, tradeup_outputs, tradeups_master RESTART IDENTITY CASCADE")
 
             // 2. Temporarily drop indexes to massively speed up bulk insertion
             jdbcTemplate.execute(
@@ -160,8 +180,8 @@ class TradeUpService(
             DROP INDEX IF EXISTS idx_tm_collections;
             DROP INDEX IF EXISTS idx_tm_skins;
             
-            ALTER TABLE tradeup_outputs DROP CONSTRAINT IF EXISTS uniq_tuo_master_skin CASCADE;
-            DROP INDEX IF EXISTS idx_tradeupoutput_result;
+            ALTER TABLE tradeup_outputs DROP CONSTRAINT IF EXISTS uniq_tuo_skin_prob_float CASCADE;
+            DROP INDEX IF EXISTS idx_tmo_output;
         """.trimIndent()
             )
         }
@@ -180,9 +200,11 @@ class TradeUpService(
 
         var insertedCount = 0
         var currentIdSequence = 1
+        var currentOutputIdSequence = 1
 
         val pendingMasters = mutableListOf<Array<Any?>>()
         val pendingOutputs = mutableListOf<Array<Any?>>()
+        val pendingJunctions = mutableListOf<Array<Any?>>()
 
         for (i in collections.indices) {
             val collectionA = collections[i]
@@ -192,23 +214,26 @@ class TradeUpService(
                 val collectionB = collections[j]
                 val collectionWithSkinsB = optimizer.getCollectionWithSkins(collectionB, stattrak)
 
-                val (masters, outputs) = generateMastersForPair(
+                val (masters, outputs, junctions) = generateMastersForPair(
                     collectionWithSkinsA,
                     collectionWithSkinsB,
                     rarityNameToId,
                     stattrak,
-                    currentIdSequence
+                    currentIdSequence,
+                    currentOutputIdSequence
                 )
 
                 pendingMasters.addAll(masters)
                 pendingOutputs.addAll(outputs)
+                pendingJunctions.addAll(junctions)
 
                 val mastersSize = masters.size
                 currentIdSequence += mastersSize
+                currentOutputIdSequence += outputs.size
                 insertedCount += mastersSize
 
                 // Cross-pair batching!
-                // Rule: If we need to flush outputs, we MUST flush masters FIRST so the Foreign Keys exist.
+                // Rule: flush order must be masters → outputs → junctions to satisfy FK constraints.
                 if (pendingMasters.size >= INSERT_CHUNK_SIZE || pendingOutputs.size >= OUTPUT_FLUSH_SIZE) {
 
                     // 1. Always flush Masters first
@@ -228,14 +253,22 @@ class TradeUpService(
                         logger.warn("Flushed ${pendingOutputs.size} outputs in ${duration.inWholeMilliseconds}ms")
                         pendingOutputs.clear()
                     }
+
+                    // 3. Then flush Junctions (after both masters and outputs exist)
+                    if (pendingJunctions.isNotEmpty()) {
+                        val (_, duration) = measureTimedValue {
+                            batchInsertMasterOutputs(pendingJunctions)
+                        }
+                        logger.warn("Flushed ${pendingJunctions.size} junctions in ${duration.inWholeMilliseconds}ms")
+                        pendingJunctions.clear()
+                    }
                 }
 
                 generateMastersProcessed.incrementAndGet()
             }
         }
 
-        // Flush any remainders at the end
-        // Always flush masters first, then outputs
+        // Flush any remainders at the end — order: masters → outputs → junctions
         if (pendingMasters.isNotEmpty()) {
             val (_, duration) = measureTimedValue {
                 batchInsertMasters(pendingMasters)
@@ -244,6 +277,9 @@ class TradeUpService(
         }
         if (pendingOutputs.isNotEmpty()) {
             batchInsertOutputs(pendingOutputs)
+        }
+        if (pendingJunctions.isNotEmpty()) {
+            batchInsertMasterOutputs(pendingJunctions)
         }
 
 
@@ -257,8 +293,8 @@ class TradeUpService(
                 CREATE INDEX IF NOT EXISTS idx_tm_collections ON tradeups_master (collection_a_id, collection_b_id);
                 CREATE INDEX IF NOT EXISTS idx_tm_skins ON tradeups_master (skin_a_id, skin_b_id);
                 
-                ALTER TABLE tradeup_outputs ADD CONSTRAINT uniq_tuo_master_skin UNIQUE (tradeup_result_id, skin_id);
-                CREATE INDEX IF NOT EXISTS idx_tradeupoutput_result ON tradeup_outputs (tradeup_result_id);
+                ALTER TABLE tradeup_outputs ADD CONSTRAINT uniq_tuo_skin_prob_float UNIQUE (skin_id, probability, float_value);
+                CREATE INDEX IF NOT EXISTS idx_tmo_output ON tradeup_master_outputs (tradeup_output_id);
             """.trimIndent()
             )
         }
@@ -266,6 +302,7 @@ class TradeUpService(
 
         dbQuery {
             jdbcTemplate.execute("SELECT setval('tradeups_master_id_seq', $insertedCount)")
+            jdbcTemplate.execute("SELECT setval('tradeup_outputs_id_seq', ${currentOutputIdSequence - 1})")
         }
 
 
@@ -278,8 +315,9 @@ class TradeUpService(
         collectionB: CollectionWithSkins,
         rarityNameToId: Map<String, String>,
         stattrak: Boolean,
-        startIdSequence: Int
-    ): Pair<List<Array<Any?>>, List<Array<Any?>>> {
+        startIdSequence: Int,
+        startOutputIdSequence: Int
+    ): Triple<List<Array<Any?>>, List<Array<Any?>>, List<Array<Any?>>> {
         val rarityOrder =
             listOf("Consumer Grade", "Industrial Grade", "Mil-Spec Grade", "Restricted", "Classified", "Covert")
 
@@ -287,11 +325,13 @@ class TradeUpService(
         val commonRarities = (collectionA.skins.keys intersect collectionB.skins.keys)
             .sortedWith(compareBy { s -> val idx = rarityOrder.indexOf(s); if (idx == -1) Int.MAX_VALUE else idx })
             .toList()
-        if (commonRarities.isEmpty()) return Pair(emptyList(), emptyList())
+        if (commonRarities.isEmpty()) return Triple(emptyList(), emptyList(), emptyList())
 
         val mastersToInsert = mutableListOf<Array<Any?>>()
         val outputsToInsert = mutableListOf<Array<Any?>>()
+        val junctionsToInsert = mutableListOf<Array<Any?>>()
         var currentId = startIdSequence
+        var currentOutputId = startOutputIdSequence
 
 
         // Iterate through adjacent rarity tiers (e.g., Industrial → Mil-Spec, Mil-Spec → Restricted)
@@ -320,39 +360,26 @@ class TradeUpService(
 
                 // Generate tradeups with different A/B ballot distributions (1-9, 2-8, ..., 9-1)
                 for (j in 1..9) {
-                    // Pre-calculate probability parts that don't depend on specific skin A/B choice
-                    // (They only depend on collection A/B and ballots j)
-                    val outputsTemplate = tradeUpOutput.skins.map { outputSkin ->
+                    // Create one set of output rows for this (j, outputFloat) group.
+                    // All masters sharing the same j and outputFloat reference these outputs via the junction table.
+                    val outputIdsForGroup = mutableListOf<Int>()
+                    tradeUpOutput.skins.forEach { outputSkin ->
                         val ballotsFromA = if (collectionA.collectionId == outputSkin.collectionId) j else 0
                         val ballotsFromB = if (collectionB.collectionId == outputSkin.collectionId) (10 - j) else 0
                         val totalBallots = ballotsFromA + ballotsFromB
                         val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
                         val probability = (totalBallots.toDouble() / 10.0) / skinsInCollection.toDouble()
 
-                        val price = outputSkin.price.values.firstOrNull() ?: 0.0
-
-                        // Return everything EXCEPT the ID, which changes per master row
-                        arrayOf<Any?>(
-                            outputSkin.skinId,
-                            outputSkin.name,
-                            probability,
-                            outputSkin.float ?: 0.0,
-                            BigDecimal(price)
-                        )
-                    }
-
-                    // Add Outputs linked to this master's unique ID
-                    outputsTemplate.forEach { row ->
                         outputsToInsert.add(
                             arrayOf(
-                                currentId,
-                                row[0], // skinId
-                                row[1], // name
-                                row[2], // probability
-                                row[3], // float
-                                row[4]  // price
+                                currentOutputId,
+                                outputSkin.skinId,
+                                probability,
+                                outputSkin.float ?: 0.0
                             )
                         )
+                        outputIdsForGroup.add(currentOutputId)
+                        currentOutputId++
                     }
 
                     skinsA.forEach { skinA ->
@@ -373,6 +400,11 @@ class TradeUpService(
                                 )
                             )
 
+                            // Link this master to all output skins in this (j, outputFloat) group
+                            outputIdsForGroup.forEach { outputId ->
+                                junctionsToInsert.add(arrayOf(currentId, outputId))
+                            }
+
                             currentId++
                         }
                     }
@@ -380,7 +412,7 @@ class TradeUpService(
             }
         }
 
-        return Pair(mastersToInsert, outputsToInsert)
+        return Triple(mastersToInsert, outputsToInsert, junctionsToInsert)
     }
 
 
@@ -593,7 +625,7 @@ class TradeUpService(
     /**
      * Insert/update all trade-up related data in database:
      * - Input skin details
-     * - Output skin details with probabilities
+     * - Output skin details with probabilities (via junction table)
      * - Price snapshot
      * - Current metrics (for fast queries)
      */
@@ -610,7 +642,7 @@ class TradeUpService(
 
                 // Clear old data
                 TradeUpInputs.deleteWhere { TradeUpInputs.tradeUpResultId eq masterId }
-                TradeUpOutputs.deleteWhere { TradeUpOutputs.tradeUpResultId eq masterId }
+                TradeupMasterOutputs.deleteWhere { TradeupMasterOutputs.tradeupMasterId eq masterId }
 
                 // Insert input skin A
                 TradeUpInputs.insert {
@@ -634,7 +666,7 @@ class TradeUpService(
                         BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
                 }
 
-                // Insert output skins with calculated probabilities
+                // Insert output skins with calculated probabilities via junction table
                 val outputsByCollection = tradeUp.output.skins.groupBy { it.collectionId }
                 tradeUp.output.skins.forEach { outputSkin ->
                     val ballotsFromA =
@@ -646,14 +678,28 @@ class TradeUpService(
                     val totalBallotsForCollection = ballotsFromA + ballotsFromB
                     val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
                     val probability = (totalBallotsForCollection.toDouble() / 10.0) / skinsInCollection.toDouble()
+                    val floatVal = outputSkin.float ?: 0.0
 
-                    TradeUpOutputs.insert {
-                        it[tradeUpResultId] = masterId
-                        it[skinId] = outputSkin.skinId
-                        it[skinName] = outputSkin.name
-                        it[TradeUpOutputs.probability] = probability
-                        it[floatValue] = outputSkin.float ?: 0.0
-                        it[price] = BigDecimal(outputSkin.price.values.firstOrNull() ?: 0.0)
+                    // Get or create the output row (unique by skinId + probability + floatValue)
+                    val outputId = TradeUpOutputs
+                        .selectAll()
+                        .where {
+                            (TradeUpOutputs.skinId eq outputSkin.skinId) and
+                                    (TradeUpOutputs.probability eq probability) and
+                                    (TradeUpOutputs.floatValue eq floatVal)
+                        }
+                        .firstOrNull()
+                        ?.get(TradeUpOutputs.id)
+                        ?: (TradeUpOutputs.insert {
+                            it[skinId] = outputSkin.skinId
+                            it[TradeUpOutputs.probability] = probability
+                            it[floatValue] = floatVal
+                        } get TradeUpOutputs.id)
+
+                    // Link master to output via junction table
+                    TradeupMasterOutputs.insert {
+                        it[tradeupMasterId] = masterId
+                        it[tradeupOutputId] = outputId
                     }
                 }
 
@@ -804,7 +850,7 @@ class TradeUpService(
     // In TradeUpService.kt
     suspend fun deleteAllTradeUps(): Int = dbQuery {
         // This instantly empties all tables and resets auto-increment sequences
-        jdbcTemplate.execute("TRUNCATE TABLE tradeup_snapshots, tradeups_current, tradeup_outputs, tradeup_inputs, tradeups_master RESTART IDENTITY CASCADE")
+        jdbcTemplate.execute("TRUNCATE TABLE tradeup_snapshots, tradeups_current, tradeup_master_outputs, tradeup_outputs, tradeup_inputs, tradeups_master RESTART IDENTITY CASCADE")
         1
     }
 
@@ -895,17 +941,22 @@ class TradeUpService(
 
     /**
      * Fetch all output skins for the given master IDs in a single query.
+     * Joins through the M:N junction table and fetches skin name from the Skins table.
      */
     private fun fetchOutputsByMasterIds(resultIds: List<Int>): Map<Int, List<TradeUpOutputInfo>> {
-        return TradeUpOutputs.selectAll()
-            .where { TradeUpOutputs.tradeUpResultId inList resultIds }
+        return (TradeupMasterOutputs
+            .join(TradeUpOutputs, JoinType.INNER,
+                additionalConstraint = { TradeupMasterOutputs.tradeupOutputId eq TradeUpOutputs.id })
+            .join(Skins, JoinType.INNER,
+                additionalConstraint = { TradeUpOutputs.skinId eq Skins.skinId }))
+            .selectAll()
+            .where { TradeupMasterOutputs.tradeupMasterId inList resultIds }
             .map { row ->
-                row[TradeUpOutputs.tradeUpResultId] to TradeUpOutputInfo(
+                row[TradeupMasterOutputs.tradeupMasterId] to TradeUpOutputInfo(
                     skinId = row[TradeUpOutputs.skinId],
-                    skinName = row[TradeUpOutputs.skinName],
+                    skinName = row[Skins.name],
                     probability = row[TradeUpOutputs.probability],
-                    floatValue = row[TradeUpOutputs.floatValue],
-                    price = row[TradeUpOutputs.price]
+                    floatValue = row[TradeUpOutputs.floatValue]
                 )
             }
             .groupBy({ it.first }, { it.second })

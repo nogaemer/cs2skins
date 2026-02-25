@@ -78,8 +78,7 @@ data class TradeUpOutputInfo(
     val skinId: String,
     val skinName: String,
     val probability: Double,
-    val floatValue: Double,
-    val price: BigDecimal
+    val floatValue: Double
 )
 
 data class JobStatusResponse(
