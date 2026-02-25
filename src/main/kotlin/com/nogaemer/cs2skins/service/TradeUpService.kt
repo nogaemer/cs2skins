@@ -65,23 +65,107 @@ class TradeUpService(
             Rarities.selectAll().associate { it[Rarities.name] to it[Rarities.rarityId] }
         }
 
+        val rarityOrder = listOf("Consumer Grade", "Industrial Grade", "Mil-Spec Grade", "Restricted", "Classified", "Covert")
+
+        // Collection data cache shared between pre-generation and main loops
+        val collectionCache = mutableMapOf<String, models.CollectionWithSkins>()
+        suspend fun getOrCacheCollection(collection: database.Collection): models.CollectionWithSkins =
+            collectionCache.getOrPut(collection.collectionId) {
+                optimizer.getCollectionWithSkins(collection, stattrak)
+            }
+
+        // --- Pre-generation pass: discover every unique (skinId, floatValue, probability) combo ---
+        data class OutputConfigData(val skinId: String, val floatValue: Double, val probability: Double)
+        val uniqueConfigs = mutableMapOf<String, OutputConfigData>()
+
+        for (i in collections.indices) {
+            val collectionA = collections[i]
+            val cwsA = getOrCacheCollection(collectionA)
+
+            for (j in i until collections.size) {
+                val collectionB = collections[j]
+                val cwsB = getOrCacheCollection(collectionB)
+
+                val commonRarities = (cwsA.skins.keys intersect cwsB.skins.keys)
+                    .sortedWith(compareBy { s -> val idx = rarityOrder.indexOf(s); if (idx == -1) Int.MAX_VALUE else idx })
+                    .toList()
+
+                for (ri in commonRarities.indices) {
+                    if (ri + 1 >= commonRarities.size) continue
+                    val inputRarityName = commonRarities[ri]
+                    val outputRarityName = commonRarities[ri + 1]
+
+                    val skinsA = cwsA.skins[inputRarityName].orEmpty()
+                    val skinsB = cwsB.skins[inputRarityName].orEmpty()
+                    if (skinsA.isEmpty() || skinsB.isEmpty()) continue
+
+                    val outputSkins = cwsA.skins[outputRarityName].orEmpty()
+                        .union(cwsB.skins[outputRarityName].orEmpty().toSet()).toMutableList()
+                    if (outputSkins.isEmpty()) continue
+
+                    val outputFloats = optimizer.calculateOutputfloatsDTO(outputSkins)
+
+                    for (outputFloat in outputFloats) {
+                        val tradeUpOutput = optimizer.calculateTradeUpOutputDTO(outputSkins, outputFloat)
+                        val outputsByCollection = tradeUpOutput.skins.groupBy { it.collectionId }
+
+                        for (split in 1..9) {
+                            tradeUpOutput.skins.forEach { outputSkin ->
+                                val ballotsFromA = if (collectionA.collectionId == outputSkin.collectionId) split else 0
+                                val ballotsFromB = if (collectionB.collectionId == outputSkin.collectionId) 10 - split else 0
+                                val totalBallots = ballotsFromA + ballotsFromB
+                                val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
+                                val probability = (totalBallots.toDouble() / 10.0) / skinsInCollection.toDouble()
+                                val key = "${outputSkin.skinId}|${outputSkin.float ?: 0.0}|$probability"
+                                uniqueConfigs.getOrPut(key) {
+                                    OutputConfigData(outputSkin.skinId, outputSkin.float ?: 0.0, probability)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Batch insert all unique output configs, then build the lookup map from DB-generated IDs
+        val outputConfigMap: Map<String, Int>
+        if (uniqueConfigs.isNotEmpty()) {
+            dbQuery {
+                TradeupOutputConfigs.batchInsert(uniqueConfigs.values, ignore = true) { config ->
+                    this[TradeupOutputConfigs.skinId] = config.skinId
+                    this[TradeupOutputConfigs.floatValue] = config.floatValue
+                    this[TradeupOutputConfigs.probability] = config.probability
+                }
+            }
+            logger.warn("Batch inserted ${uniqueConfigs.size} unique output configs")
+            outputConfigMap = dbQuery {
+                TradeupOutputConfigs.selectAll().associate { row ->
+                    "${row[TradeupOutputConfigs.skinId]}|${row[TradeupOutputConfigs.floatValue]}|${row[TradeupOutputConfigs.probability]}" to
+                        row[TradeupOutputConfigs.id]
+                }
+            }
+        } else {
+            outputConfigMap = emptyMap()
+        }
+
+        // --- Main generation pass ---
         var insertedCount = 0
 
         for (i in collections.indices) {
             val collectionA = collections[i]
-            val collectionWithSkinsA = optimizer.getCollectionWithSkins(collectionA, stattrak)
+            val collectionWithSkinsA = getOrCacheCollection(collectionA)
 
             for (j in i until collections.size) {
                 val collectionB = collections[j]
-                val collectionWithSkinsB = optimizer.getCollectionWithSkins(collectionB, stattrak)
-
+                val collectionWithSkinsB = getOrCacheCollection(collectionB)
 
                 val (_, duration) = measureTimedValue {
                     insertedCount += generateMastersForPair(
                         collectionWithSkinsA,
                         collectionWithSkinsB,
                         rarityNameToId,
-                        stattrak
+                        stattrak,
+                        outputConfigMap
                     )
                 }
                 logger.warn("Processed pair ${collectionA.name} + ${collectionB.name} (inserted $insertedCount masters so far) — took ${duration.inWholeMilliseconds}ms")
@@ -97,7 +181,8 @@ class TradeUpService(
         collectionA: models.CollectionWithSkins,
         collectionB: models.CollectionWithSkins,
         rarityNameToId: Map<String, String>,
-        stattrak: Boolean
+        stattrak: Boolean,
+        outputConfigMap: Map<String, Int>
     ): Int {
         val rarityOrder = listOf("Consumer Grade", "Industrial Grade", "Mil-Spec Grade", "Restricted", "Classified", "Covert")
         val commonRarities = (collectionA.skins.keys intersect collectionB.skins.keys)
@@ -108,9 +193,8 @@ class TradeUpService(
         var insertedCount = 0
         val toInsert = mutableListOf<Array<Any?>>() // collect rows to batch-insert
 
-        // Map from masterKey to pre-computed output rows (without masterId)
-        // Each output row: [skinId, skinName, probability, floatValue, price]
-        val outputsByMasterKey = mutableMapOf<String, List<Array<Any?>>>()
+        // Map from masterKey to pre-computed output configIds for the mapping table
+        val mappingsByMasterKey = mutableMapOf<String, List<Int>>()
 
         for (i in commonRarities.indices) {
             if (i + 1 >= commonRarities.size) continue
@@ -146,20 +230,15 @@ class TradeUpService(
                                 outputFloat
                             ))
 
-                            // Pre-compute output rows for this master
-                            outputsByMasterKey[key] = tradeUpOutput.skins.map { outputSkin ->
+                            // Pre-compute mapping configIds for this master
+                            mappingsByMasterKey[key] = tradeUpOutput.skins.mapNotNull { outputSkin ->
                                 val ballotsFromA = if (collectionA.collectionId == outputSkin.collectionId) j else 0
                                 val ballotsFromB = if (collectionB.collectionId == outputSkin.collectionId) 10 - j else 0
                                 val totalBallots = ballotsFromA + ballotsFromB
                                 val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
                                 val probability = (totalBallots.toDouble() / 10.0) / skinsInCollection.toDouble()
-                                arrayOf<Any?>(
-                                    outputSkin.skinId,
-                                    outputSkin.name,
-                                    probability,
-                                    outputSkin.float ?: 0.0,
-                                    BigDecimal(outputSkin.price.values.firstOrNull() ?: 0.0)
-                                )
+                                val configKey = "${outputSkin.skinId}|${outputSkin.float ?: 0.0}|$probability"
+                                outputConfigMap[configKey]
                             }
                         }
                     }
@@ -208,32 +287,27 @@ class TradeUpService(
                     }
             }
 
-            // Build output rows with resolved master IDs and batch-insert them
-            val outputsToInsert = mutableListOf<Array<Any?>>()
-            for ((key, outputRows) in outputsByMasterKey) {
+            // Build mapping rows with resolved master IDs and batch-insert them into TradeupsMasterToOutputs
+            val mappingsToInsert = mutableListOf<Pair<Int, Int>>()
+            for ((key, configIds) in mappingsByMasterKey) {
                 val masterId = masterIdByKey[key] ?: continue
-                outputRows.forEach { row ->
-                    outputsToInsert.add(arrayOf(masterId, row[0], row[1], row[2], row[3], row[4]))
+                configIds.forEach { configId ->
+                    mappingsToInsert.add(masterId to configId)
                 }
             }
 
-            if (outputsToInsert.isNotEmpty()) {
-                val (_, outputDuration) = dbQuery {
+            if (mappingsToInsert.isNotEmpty()) {
+                val (_, mappingDuration) = dbQuery {
                     measureTimedValue {
-                        outputsToInsert.chunked(INSERT_CHUNK_SIZE).forEach { chunk ->
-                            // ignore = true skips duplicates on re-runs (unique index on tradeUpResultId+skinId)
-                            TradeUpOutputs.batchInsert(chunk, ignore = true) { row ->
-                                this[TradeUpOutputs.tradeUpResultId] = row[0] as Int
-                                this[TradeUpOutputs.skinId] = row[1] as String
-                                this[TradeUpOutputs.skinName] = row[2] as String
-                                this[TradeUpOutputs.probability] = row[3] as Double
-                                this[TradeUpOutputs.floatValue] = row[4] as Double
-                                this[TradeUpOutputs.price] = row[5] as BigDecimal
+                        mappingsToInsert.chunked(INSERT_CHUNK_SIZE).forEach { chunk ->
+                            TradeupsMasterToOutputs.batchInsert(chunk, ignore = true) { (masterId, configId) ->
+                                this[TradeupsMasterToOutputs.masterId] = masterId
+                                this[TradeupsMasterToOutputs.outputConfigId] = configId
                             }
                         }
                     }
                 }.let { it.value to it.duration }
-                logger.warn("Batch insert of ${outputsToInsert.size} outputs took ${outputDuration.inWholeMilliseconds}ms")
+                logger.warn("Batch insert of ${mappingsToInsert.size} master-to-output mappings took ${mappingDuration.inWholeMilliseconds}ms")
             }
         }
 
@@ -377,9 +451,8 @@ class TradeUpService(
 
                 val (_, duration) = dbQuery {
                     measureTimedValue {
-                        // Refresh input/output skin details with current prices
+                        // Refresh input skin details with current prices
                         TradeUpInputs.deleteWhere { TradeUpInputs.tradeUpResultId eq masterId }
-                        TradeUpOutputs.deleteWhere { TradeUpOutputs.tradeUpResultId eq masterId }
 
                         TradeUpInputs.insert {
                             it[tradeUpResultId] = masterId
@@ -399,29 +472,6 @@ class TradeUpService(
                             it[floatValue] = tradeUp.input.costsFloatInput?.floatB ?: 0.0
                             it[pricePerUnit] =
                                 BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
-                        }
-
-                        val outputsByCollection = tradeUp.output.skins.groupBy { it.collectionId }
-                        tradeUp.output.skins.forEach { outputSkin ->
-                            val ballotsFromA =
-                                if (tradeUp.input.tradeUpInputComponentA.collectionId == outputSkin.collectionId)
-                                    tradeUp.input.tradeUpInputComponentA.amount else 0
-                            val ballotsFromB =
-                                if (tradeUp.input.tradeUpInputComponentB.collectionId == outputSkin.collectionId)
-                                    tradeUp.input.tradeUpInputComponentB.amount else 0
-                            val totalBallotsForCollection = ballotsFromA + ballotsFromB
-                            val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
-                            val probability =
-                                (totalBallotsForCollection.toDouble() / 10.0) / skinsInCollection.toDouble()
-
-                            TradeUpOutputs.insert {
-                                it[tradeUpResultId] = masterId
-                                it[skinId] = outputSkin.skinId
-                                it[skinName] = outputSkin.name
-                                it[TradeUpOutputs.probability] = probability
-                                it[floatValue] = outputSkin.float ?: 0.0
-                                it[price] = BigDecimal(outputSkin.price.values.firstOrNull() ?: 0.0)
-                            }
                         }
 
                         TradeupSnapshots.insert {
@@ -560,10 +610,11 @@ class TradeUpService(
     suspend fun deleteAllTradeUps(): Int = dbQuery {
         val deletedSnapshots = TradeupSnapshots.deleteAll()
         val deletedCurrent = TradeupsCurrent.deleteAll()
-        val deletedOutputs = TradeUpOutputs.deleteAll()
         val deletedInputs = TradeUpInputs.deleteAll()
+        val deletedMappings = TradeupsMasterToOutputs.deleteAll()
         val deletedMaster = TradeupsMaster.deleteAll()
-        deletedSnapshots + deletedCurrent + deletedOutputs + deletedInputs + deletedMaster
+        val deletedOutputConfigs = TradeupOutputConfigs.deleteAll()
+        deletedSnapshots + deletedCurrent + deletedInputs + deletedMappings + deletedMaster + deletedOutputConfigs
     }
 
     /**
@@ -626,19 +677,54 @@ class TradeUpService(
             }
             .groupBy({ it.first }, { it.second })
 
-        // Fetch all outputs in one query
-        val outputsByResultId = TradeUpOutputs.selectAll()
-            .where { TradeUpOutputs.tradeUpResultId inList resultIds }
+        // Fetch all outputs via the new M2M schema: TradeupsMasterToOutputs → TradeupOutputConfigs → Skins
+        data class RawOutputRow(
+            val masterId: Int,
+            val skinId: String,
+            val skinName: String,
+            val floatValue: Double,
+            val probability: Double
+        )
+        val rawOutputRows = TradeupsMasterToOutputs
+            .join(TradeupOutputConfigs, JoinType.INNER,
+                additionalConstraint = { TradeupsMasterToOutputs.outputConfigId eq TradeupOutputConfigs.id })
+            .join(Skins, JoinType.LEFT,
+                additionalConstraint = { TradeupOutputConfigs.skinId eq Skins.skinId })
+            .selectAll()
+            .where { TradeupsMasterToOutputs.masterId inList resultIds }
             .map { row ->
-                row[TradeUpOutputs.tradeUpResultId] to TradeUpOutputInfo(
-                    skinId = row[TradeUpOutputs.skinId],
-                    skinName = row[TradeUpOutputs.skinName],
-                    probability = row[TradeUpOutputs.probability],
-                    floatValue = row[TradeUpOutputs.floatValue],
-                    price = row[TradeUpOutputs.price]
+                RawOutputRow(
+                    masterId = row[TradeupsMasterToOutputs.masterId],
+                    skinId = row[TradeupOutputConfigs.skinId],
+                    skinName = row.getOrNull(Skins.name) ?: "",
+                    floatValue = row[TradeupOutputConfigs.floatValue],
+                    probability = row[TradeupOutputConfigs.probability]
                 )
             }
-            .groupBy({ it.first }, { it.second })
+
+        // Fetch current prices for all output skins in one query
+        val outputSkinIds = rawOutputRows.map { it.skinId }.distinct()
+        val pricesBySkinWear = if (outputSkinIds.isNotEmpty()) {
+            SkinPricesCurrent.selectAll()
+                .where { SkinPricesCurrent.skinId inList outputSkinIds }
+                .associate { row ->
+                    "${row[SkinPricesCurrent.skinId]}_${row[SkinPricesCurrent.wearId]}" to row[SkinPricesCurrent.price]
+                }
+        } else emptyMap()
+
+        val outputsByResultId = rawOutputRows.groupBy(
+            { it.masterId },
+            { row ->
+                val wearId = models.CSWear.floatToCSWear(row.floatValue).id
+                TradeUpOutputInfo(
+                    skinId = row.skinId,
+                    skinName = row.skinName,
+                    probability = row.probability,
+                    floatValue = row.floatValue,
+                    price = pricesBySkinWear["${row.skinId}_${wearId}"] ?: BigDecimal.ZERO
+                )
+            }
+        )
 
         // Fetch all unique collections in one query
         val collectionIds = results.flatMap {
