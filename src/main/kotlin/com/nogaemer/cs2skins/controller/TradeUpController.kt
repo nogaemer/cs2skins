@@ -1,12 +1,9 @@
 package com.nogaemer.cs2skins.controller
 
-import com.nogaemer.cs2skins.dto.JobStatusResponse
-import com.nogaemer.cs2skins.dto.PageResponse
-import com.nogaemer.cs2skins.dto.TradeUpFilterRequest
-import com.nogaemer.cs2skins.dto.TradeUpHistoryPoint
-import com.nogaemer.cs2skins.dto.TradeUpResultResponse
+import com.nogaemer.cs2skins.dto.*
 import com.nogaemer.cs2skins.service.AsyncJobService
 import com.nogaemer.cs2skins.service.TradeUpService
+import kotlinx.coroutines.runBlocking
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,6 +17,14 @@ class TradeUpController(
 
     private val generateMastersJobRunning = AtomicBoolean(false)
     private val calculatePricesJobRunning = AtomicBoolean(false)
+
+    @GetMapping("/test")
+    fun test(): ResponseEntity<String> {
+        runBlocking {
+            tradeUpService.test()
+        }
+        return ResponseEntity.ok("Test successful")
+    }
 
     @PostMapping("/generate-masters")
     fun generateMasters(
