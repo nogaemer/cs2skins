@@ -166,13 +166,16 @@ class TradeUpOptimizer(
 
     fun calculateOutputfloatsDTO(inputs: List<SkinDTO>): List<Double> {
         return inputs.flatMap { input ->
-            CSWear.entries.map { wear ->
+            CSWear.entries.mapNotNull { wear ->
+                if (wear.max > input.maxFloat
+                    || wear.min < input.minFloat) return@mapNotNull null
+
                 val converted = convertOutputFloatToInputFloat(
-                    wear.max - 0.0000001,
+                    wear.max - 1e-13,
                     input.maxFloat,
                     input.minFloat
                 )
-                converted
+                return@mapNotNull (converted * 1e12).toLong() / 1e12
             }
         }.distinct()
     }

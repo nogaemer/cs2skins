@@ -224,6 +224,7 @@ object TradeUpOutputs : Table("tradeup_outputs") {
     val id = integer("id").autoIncrement()
     val tradeUpResultId = integer("tradeup_result_id")
         .references(TradeupsMaster.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
+
     val skinId = varchar("skin_id", 255)
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val skinName = varchar("skin_name", 255)
@@ -235,6 +236,7 @@ object TradeUpOutputs : Table("tradeup_outputs") {
 
     init {
         index("idx_tradeup_output_result", false, tradeUpResultId)
+        uniqueIndex("uniq_tuo_master_skin", tradeUpResultId, skinId)
     }
 }
 
