@@ -56,7 +56,8 @@ class SkinDatabaseInitializer {
                 TradeupsCurrent,
                 TradeupSnapshots,
                 TradeUpInputs,
-                TradeUpOutputs
+                TradeUpOutputs,
+                TradeupMasterOutputs
             )
 
             // TimescaleDB setup
