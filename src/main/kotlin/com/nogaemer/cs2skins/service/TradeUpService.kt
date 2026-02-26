@@ -479,7 +479,6 @@ class TradeUpService(
                 )
                 if (result != null) {
                     chunkResults.add(result)
-                    calculatePricesProcessed.incrementAndGet()
                 }
             }
 
@@ -487,6 +486,8 @@ class TradeUpService(
             if (chunkResults.isNotEmpty()) {
                 val (_, duration) = measureTimedValue { bulkSavePriceData(chunkResults) }
                 logger.warn("Bulk saved ${chunkResults.size} masters in ${duration.inWholeMilliseconds}ms")
+                // Increment progress only after the flush succeeds
+                calculatePricesProcessed.addAndGet(chunkResults.size.toLong())
                 processedCount += chunkResults.size
             }
 
@@ -628,69 +629,96 @@ class TradeUpService(
     }
 
     /**
-     * Bulk-persist all price data for a chunk of masters using COPY FROM STDIN for inserts
-     * and batchUpsert for the current-metrics table.
+     * Bulk-persist all price data for a chunk of masters in a **single JDBC transaction**
+     * to guarantee atomicity: if any step fails, the whole chunk is rolled back.
      *
-     * Write order:
-     * 1. Delete stale tradeup_inputs rows for every master in the chunk (single IN-list DELETE).
+     * Write order (on one connection, auto-commit disabled):
+     * 1. DELETE stale tradeup_inputs rows for the chunk (single SQL DELETE).
      * 2. COPY new tradeup_inputs rows (2 per master) via PostgreSQL COPY FROM STDIN.
      * 3. COPY new tradeup_snapshots rows (1 per master) via PostgreSQL COPY FROM STDIN.
-     * 4. batchUpsert tradeups_current rows (1 per master).
+     * 4. Batch INSERT … ON CONFLICT DO UPDATE for tradeups_current (1 row per master).
      */
     private suspend fun bulkSavePriceData(results: List<MasterPriceResult>) = withContext(Dispatchers.IO) {
         val masterIds = results.map { it.masterId }
 
-        // 1. Delete stale inputs in one query
-        dbQuery {
-            TradeUpInputs.deleteWhere { TradeUpInputs.tradeUpResultId inList masterIds }
+        // Build COPY payloads before opening the connection
+        val inputsCsv = buildString {
+            for (r in results) {
+                append("${r.masterId}\t${r.inputASkinId.csvQuote()}\t${r.inputASkinName.csvQuote()}\t${r.inputAAmount}\t${r.inputAFloat}\t${r.inputAPrice}\n")
+                append("${r.masterId}\t${r.inputBSkinId.csvQuote()}\t${r.inputBSkinName.csvQuote()}\t${r.inputBAmount}\t${r.inputBFloat}\t${r.inputBPrice}\n")
+            }
+        }
+        val snapshotsCsv = buildString {
+            for (r in results) {
+                append("${r.masterId}\t${r.now}\t${r.roiValue}\t${r.profitValue}\t${r.inputCostValue}\t${r.outputCostValue}\n")
+            }
         }
 
-        // 2. COPY tradeup_inputs (2 rows per master: skin A and skin B)
-        // String fields are CSV-quoted to safely handle any special characters.
-        val inputsTsv = StringBuilder()
-        for (r in results) {
-            inputsTsv.append("${r.masterId}\t${r.inputASkinId.csvQuote()}\t${r.inputASkinName.csvQuote()}\t${r.inputAAmount}\t${r.inputAFloat}\t${r.inputAPrice}\n")
-            inputsTsv.append("${r.masterId}\t${r.inputBSkinId.csvQuote()}\t${r.inputBSkinName.csvQuote()}\t${r.inputBAmount}\t${r.inputBFloat}\t${r.inputBPrice}\n")
-        }
+        // All 4 write operations share a single connection and a single transaction
         jdbcTemplate.execute { conn: Connection ->
-            val pgConn = conn.unwrap(BaseConnection::class.java)
-            val copyManager = CopyManager(pgConn)
-            StringReader(inputsTsv.toString()).use { reader ->
-                copyManager.copyIn(
-                    "COPY tradeup_inputs (tradeup_result_id, skin_id, skin_name, amount, float_value, price_per_unit) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')",
-                    reader
-                )
+            val wasAutoCommit = conn.autoCommit
+            conn.autoCommit = false
+            try {
+                val pgConn = conn.unwrap(BaseConnection::class.java)
+                val copyManager = CopyManager(pgConn)
+
+                // 1. Delete stale inputs for this chunk
+                conn.prepareStatement(
+                    "DELETE FROM tradeup_inputs WHERE tradeup_result_id = ANY(?)"
+                ).use { stmt ->
+                    stmt.setArray(1, conn.createArrayOf("INTEGER", masterIds.toTypedArray()))
+                    stmt.executeUpdate()
+                }
+
+                // 2. COPY tradeup_inputs (2 rows per master: skin A and skin B)
+                StringReader(inputsCsv).use {
+                    copyManager.copyIn(
+                        "COPY tradeup_inputs (tradeup_result_id, skin_id, skin_name, amount, float_value, price_per_unit) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')",
+                        it
+                    )
+                }
+
+                // 3. COPY tradeup_snapshots (1 row per master)
+                StringReader(snapshotsCsv).use {
+                    copyManager.copyIn(
+                        "COPY tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')",
+                        it
+                    )
+                }
+
+                // 4. Upsert tradeups_current (1 row per master)
+                conn.prepareStatement(
+                    """
+                    INSERT INTO tradeups_current (tradeup_id, roi, profit, input_cost, output_cost, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (tradeup_id) DO UPDATE SET
+                        roi = EXCLUDED.roi,
+                        profit = EXCLUDED.profit,
+                        input_cost = EXCLUDED.input_cost,
+                        output_cost = EXCLUDED.output_cost,
+                        updated_at = EXCLUDED.updated_at
+                    """.trimIndent()
+                ).use { stmt ->
+                    for (r in results) {
+                        stmt.setInt(1, r.masterId)
+                        stmt.setDouble(2, r.roiValue)
+                        stmt.setDouble(3, r.profitValue)
+                        stmt.setDouble(4, r.inputCostValue)
+                        stmt.setDouble(5, r.outputCostValue)
+                        stmt.setLong(6, r.now)
+                        stmt.addBatch()
+                    }
+                    stmt.executeBatch()
+                }
+
+                conn.commit()
+            } catch (e: Exception) {
+                conn.rollback()
+                throw e
+            } finally {
+                conn.autoCommit = wasAutoCommit
             }
             null
-        }
-
-        // 3. COPY tradeup_snapshots (1 row per master)
-        val snapshotsTsv = StringBuilder()
-        for (r in results) {
-            snapshotsTsv.append("${r.masterId}\t${r.now}\t${r.roiValue}\t${r.profitValue}\t${r.inputCostValue}\t${r.outputCostValue}\n")
-        }
-        jdbcTemplate.execute { conn: Connection ->
-            val pgConn = conn.unwrap(BaseConnection::class.java)
-            val copyManager = CopyManager(pgConn)
-            StringReader(snapshotsTsv.toString()).use { reader ->
-                copyManager.copyIn(
-                    "COPY tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')",
-                    reader
-                )
-            }
-            null
-        }
-
-        // 4. batchUpsert tradeups_current (1 row per master)
-        dbQuery {
-            TradeupsCurrent.batchUpsert(results, keys = arrayOf(TradeupsCurrent.tradeupId)) { r ->
-                this[TradeupsCurrent.tradeupId] = r.masterId
-                this[TradeupsCurrent.roi] = r.roiValue
-                this[TradeupsCurrent.profit] = r.profitValue
-                this[TradeupsCurrent.inputCost] = r.inputCostValue
-                this[TradeupsCurrent.outputCost] = r.outputCostValue
-                this[TradeupsCurrent.updatedAt] = r.now
-            }
         }
     }
 
