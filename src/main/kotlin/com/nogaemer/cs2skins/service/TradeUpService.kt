@@ -52,21 +52,16 @@ class TradeUpService(
         newSuspendedTransaction(Dispatchers.IO) { block() }
 
     /**
-     * Batch insert trade-up outputs using JdbcTemplate for proper multi-row batching.
-     * This bypasses Exposed's single-row RETURNING logic and allows reWriteBatchedInserts=true
-     * to merge all rows into a single multi-row INSERT statement.
+     * Batch insert output pools using JdbcTemplate COPY FROM STDIN.
      *
-     * @param outputsToInsert List of output rows: [id, skinId, probability, floatValue]
+     * @param poolsToInsert List of pool rows: [id, hash]
      */
-    private suspend fun batchInsertOutputs(outputsToInsert: List<Array<Any?>>) = withContext(Dispatchers.IO) {
+    private suspend fun batchInsertOutputPools(poolsToInsert: List<Array<Any?>>) = withContext(Dispatchers.IO) {
         val tsvData = StringBuilder()
-        for (row in outputsToInsert) {
+        for (row in poolsToInsert) {
             val id = row[0] as Int
-            val skinId = row[1] as String
-            val probability = row[2] as Double
-            val floatValue = row[3] as Double
-
-            tsvData.append("$id\t$skinId\t$probability\t$floatValue\n")
+            val hash = row[1] as String
+            tsvData.append("$id\t$hash\n")
         }
 
         jdbcTemplate.execute { conn: Connection ->
@@ -74,7 +69,7 @@ class TradeUpService(
             val copyManager = CopyManager(pgConn)
 
             val sql =
-                "COPY tradeup_outputs (id, skin_id, probability, float_value) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')"
+                "COPY output_pools (id, hash) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')"
 
             StringReader(tsvData.toString()).use { reader ->
                 copyManager.copyIn(sql, reader)
@@ -84,16 +79,18 @@ class TradeUpService(
     }
 
     /**
-     * Batch insert master-output junction entries using JdbcTemplate COPY.
+     * Batch insert output pool items using JdbcTemplate COPY FROM STDIN.
      *
-     * @param junctionsToInsert List of junction rows: [tradeupMasterId, tradeupOutputId]
+     * @param itemsToInsert List of item rows: [poolId, skinId, probability, floatValue]
      */
-    private suspend fun batchInsertMasterOutputs(junctionsToInsert: List<Array<Any?>>) = withContext(Dispatchers.IO) {
+    private suspend fun batchInsertOutputPoolItems(itemsToInsert: List<Array<Any?>>) = withContext(Dispatchers.IO) {
         val tsvData = StringBuilder()
-        for (row in junctionsToInsert) {
-            val masterId = row[0] as Int
-            val outputId = row[1] as Int
-            tsvData.append("$masterId\t$outputId\n")
+        for (row in itemsToInsert) {
+            val poolId = row[0] as Int
+            val skinId = row[1] as String
+            val probability = row[2] as Double
+            val floatValue = row[3] as Double
+            tsvData.append("$poolId\t$skinId\t$probability\t$floatValue\n")
         }
 
         jdbcTemplate.execute { conn: Connection ->
@@ -101,7 +98,7 @@ class TradeUpService(
             val copyManager = CopyManager(pgConn)
 
             val sql =
-                "COPY tradeup_master_outputs (tradeup_master_id, tradeup_output_id) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')"
+                "COPY output_pool_items (pool_id, skin_id, probability, float_value) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')"
 
             StringReader(tsvData.toString()).use { reader ->
                 copyManager.copyIn(sql, reader)
@@ -129,8 +126,9 @@ class TradeUpService(
             val amountB = row[7] as Int
             val outputFloat = row[8] as Double
             val id = row[9] as Int
+            val outputPoolId = row[10] as Int
 
-            tsvData.append("$id\t$colA\t$colB\t$rarity\t$isStattrak\t$skinA\t$skinB\t$amountA\t$amountB\t$outputFloat\t$now\n")
+            tsvData.append("$id\t$colA\t$colB\t$rarity\t$isStattrak\t$skinA\t$skinB\t$amountA\t$amountB\t$outputFloat\t$now\t$outputPoolId\n")
         }
 
         // Execute using the explicit ConnectionCallback interface
@@ -140,7 +138,7 @@ class TradeUpService(
 
             // Postgres COPY command telling it to expect Tab-delimited CSV data
             val sql =
-                "COPY tradeups_master (id, collection_a_id, collection_b_id, rarity_id, stattrak, skin_a_id, skin_b_id, amount_a, amount_b, output_float, created_at) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')"
+                "COPY tradeups_master (id, collection_a_id, collection_b_id, rarity_id, stattrak, skin_a_id, skin_b_id, amount_a, amount_b, output_float, created_at, output_pool_id) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')"
 
             StringReader(tsvData.toString()).use { reader ->
                 copyManager.copyIn(sql, reader)
@@ -169,7 +167,7 @@ class TradeUpService(
     suspend fun generateMasterDefinitions(stattrak: Boolean = false): Int = withContext(Dispatchers.IO) {
         // 1. Instantly wipe the tables before rebuilding to avoid conflicts
         dbQuery {
-            jdbcTemplate.execute("TRUNCATE TABLE tradeup_master_outputs, tradeup_outputs, tradeups_master RESTART IDENTITY CASCADE")
+            jdbcTemplate.execute("TRUNCATE TABLE output_pool_items, tradeups_master, output_pools RESTART IDENTITY CASCADE")
 
             // 2. Temporarily drop indexes to massively speed up bulk insertion
             jdbcTemplate.execute(
@@ -179,9 +177,8 @@ class TradeUpService(
             DROP INDEX IF EXISTS idx_tm_rarity;
             DROP INDEX IF EXISTS idx_tm_collections;
             DROP INDEX IF EXISTS idx_tm_skins;
-            
-            ALTER TABLE tradeup_outputs DROP CONSTRAINT IF EXISTS uniq_tuo_skin_prob_float CASCADE;
-            DROP INDEX IF EXISTS idx_tmo_output;
+            DROP INDEX IF EXISTS idx_tm_output_pool;
+            DROP INDEX IF EXISTS idx_output_pool_items_pool;
         """.trimIndent()
             )
         }
@@ -200,11 +197,12 @@ class TradeUpService(
 
         var insertedCount = 0
         var currentIdSequence = 1
-        var currentOutputIdSequence = 1
 
         val pendingMasters = mutableListOf<Array<Any?>>()
-        val pendingOutputs = mutableListOf<Array<Any?>>()
-        val pendingJunctions = mutableListOf<Array<Any?>>()
+        val poolHashMap = mutableMapOf<String, Int>()
+        val currentPoolIdRef = intArrayOf(1)
+        val pendingPools = mutableListOf<Array<Any?>>()
+        val pendingPoolItems = mutableListOf<Array<Any?>>()
 
         for (i in collections.indices) {
             val collectionA = collections[i]
@@ -214,53 +212,53 @@ class TradeUpService(
                 val collectionB = collections[j]
                 val collectionWithSkinsB = optimizer.getCollectionWithSkins(collectionB, stattrak)
 
-                val (masters, outputs, junctions) = generateMastersForPair(
+                val masters = generateMastersForPair(
                     collectionWithSkinsA,
                     collectionWithSkinsB,
                     rarityNameToId,
                     stattrak,
                     currentIdSequence,
-                    currentOutputIdSequence
+                    poolHashMap,
+                    currentPoolIdRef,
+                    pendingPools,
+                    pendingPoolItems
                 )
 
                 pendingMasters.addAll(masters)
-                pendingOutputs.addAll(outputs)
-                pendingJunctions.addAll(junctions)
 
                 val mastersSize = masters.size
                 currentIdSequence += mastersSize
-                currentOutputIdSequence += outputs.size
                 insertedCount += mastersSize
 
                 // Cross-pair batching!
-                // Rule: flush order must be masters → outputs → junctions to satisfy FK constraints.
-                if (pendingMasters.size >= INSERT_CHUNK_SIZE || pendingOutputs.size >= OUTPUT_FLUSH_SIZE) {
+                // Rule: flush order must be pools → pool items → masters to satisfy FK constraints.
+                if (pendingMasters.size >= INSERT_CHUNK_SIZE || pendingPoolItems.size >= OUTPUT_FLUSH_SIZE) {
 
-                    // 1. Always flush Masters first
+                    // 1. Always flush Pools first
+                    if (pendingPools.isNotEmpty()) {
+                        val (_, duration) = measureTimedValue {
+                            batchInsertOutputPools(pendingPools)
+                        }
+                        logger.warn("Flushed ${pendingPools.size} output pools in ${duration.inWholeMilliseconds}ms")
+                        pendingPools.clear()
+                    }
+
+                    // 2. Then flush Pool Items
+                    if (pendingPoolItems.isNotEmpty()) {
+                        val (_, duration) = measureTimedValue {
+                            batchInsertOutputPoolItems(pendingPoolItems)
+                        }
+                        logger.warn("Flushed ${pendingPoolItems.size} pool items in ${duration.inWholeMilliseconds}ms")
+                        pendingPoolItems.clear()
+                    }
+
+                    // 3. Then flush Masters (after pools and items exist)
                     if (pendingMasters.isNotEmpty()) {
                         val (_, duration) = measureTimedValue {
-                            batchInsertMasters(pendingMasters) // The COPY function
+                            batchInsertMasters(pendingMasters)
                         }
                         logger.warn("Flushed ${pendingMasters.size} masters in ${duration.inWholeMilliseconds}ms")
                         pendingMasters.clear()
-                    }
-
-                    // 2. Then flush Outputs
-                    if (pendingOutputs.isNotEmpty()) {
-                        val (_, duration) = measureTimedValue {
-                            batchInsertOutputs(pendingOutputs) // The COPY function
-                        }
-                        logger.warn("Flushed ${pendingOutputs.size} outputs in ${duration.inWholeMilliseconds}ms")
-                        pendingOutputs.clear()
-                    }
-
-                    // 3. Then flush Junctions (after both masters and outputs exist)
-                    if (pendingJunctions.isNotEmpty()) {
-                        val (_, duration) = measureTimedValue {
-                            batchInsertMasterOutputs(pendingJunctions)
-                        }
-                        logger.warn("Flushed ${pendingJunctions.size} junctions in ${duration.inWholeMilliseconds}ms")
-                        pendingJunctions.clear()
                     }
                 }
 
@@ -268,18 +266,21 @@ class TradeUpService(
             }
         }
 
-        // Flush any remainders at the end — order: masters → outputs → junctions
+        // Flush any remainders at the end — order: pools → pool items → masters
+        if (pendingPools.isNotEmpty()) {
+            val (_, duration) = measureTimedValue {
+                batchInsertOutputPools(pendingPools)
+            }
+            logger.warn("Flushed remaining ${pendingPools.size} output pools in ${duration.inWholeMilliseconds}ms")
+        }
+        if (pendingPoolItems.isNotEmpty()) {
+            batchInsertOutputPoolItems(pendingPoolItems)
+        }
         if (pendingMasters.isNotEmpty()) {
             val (_, duration) = measureTimedValue {
                 batchInsertMasters(pendingMasters)
             }
             logger.warn("Flushed remaining ${pendingMasters.size} masters in ${duration.inWholeMilliseconds}ms")
-        }
-        if (pendingOutputs.isNotEmpty()) {
-            batchInsertOutputs(pendingOutputs)
-        }
-        if (pendingJunctions.isNotEmpty()) {
-            batchInsertMasterOutputs(pendingJunctions)
         }
 
 
@@ -292,9 +293,8 @@ class TradeUpService(
                 CREATE INDEX IF NOT EXISTS idx_tm_rarity ON tradeups_master (rarity_id);
                 CREATE INDEX IF NOT EXISTS idx_tm_collections ON tradeups_master (collection_a_id, collection_b_id);
                 CREATE INDEX IF NOT EXISTS idx_tm_skins ON tradeups_master (skin_a_id, skin_b_id);
-                
-                ALTER TABLE tradeup_outputs ADD CONSTRAINT uniq_tuo_skin_prob_float UNIQUE (skin_id, probability, float_value);
-                CREATE INDEX IF NOT EXISTS idx_tmo_output ON tradeup_master_outputs (tradeup_output_id);
+                CREATE INDEX IF NOT EXISTS idx_tm_output_pool ON tradeups_master (output_pool_id);
+                CREATE INDEX IF NOT EXISTS idx_output_pool_items_pool ON output_pool_items (pool_id);
             """.trimIndent()
             )
         }
@@ -302,7 +302,8 @@ class TradeUpService(
 
         dbQuery {
             jdbcTemplate.execute("SELECT setval('tradeups_master_id_seq', $insertedCount)")
-            jdbcTemplate.execute("SELECT setval('tradeup_outputs_id_seq', ${currentOutputIdSequence - 1})")
+            jdbcTemplate.execute("SELECT setval('output_pools_id_seq', ${currentPoolIdRef[0] - 1})")
+            jdbcTemplate.execute("SELECT setval('output_pool_items_id_seq', (SELECT COALESCE(MAX(id), 0) FROM output_pool_items))")
         }
 
 
@@ -316,8 +317,11 @@ class TradeUpService(
         rarityNameToId: Map<String, String>,
         stattrak: Boolean,
         startIdSequence: Int,
-        startOutputIdSequence: Int
-    ): Triple<List<Array<Any?>>, List<Array<Any?>>, List<Array<Any?>>> {
+        poolHashMap: MutableMap<String, Int>,
+        currentPoolIdRef: IntArray,
+        pendingPools: MutableList<Array<Any?>>,
+        pendingPoolItems: MutableList<Array<Any?>>
+    ): List<Array<Any?>> {
         val rarityOrder =
             listOf("Consumer Grade", "Industrial Grade", "Mil-Spec Grade", "Restricted", "Classified", "Covert")
 
@@ -325,13 +329,10 @@ class TradeUpService(
         val commonRarities = (collectionA.skins.keys intersect collectionB.skins.keys)
             .sortedWith(compareBy { s -> val idx = rarityOrder.indexOf(s); if (idx == -1) Int.MAX_VALUE else idx })
             .toList()
-        if (commonRarities.isEmpty()) return Triple(emptyList(), emptyList(), emptyList())
+        if (commonRarities.isEmpty()) return emptyList()
 
         val mastersToInsert = mutableListOf<Array<Any?>>()
-        val outputsToInsert = mutableListOf<Array<Any?>>()
-        val junctionsToInsert = mutableListOf<Array<Any?>>()
         var currentId = startIdSequence
-        var currentOutputId = startOutputIdSequence
 
 
         // Iterate through adjacent rarity tiers (e.g., Industrial → Mil-Spec, Mil-Spec → Restricted)
@@ -360,31 +361,36 @@ class TradeUpService(
 
                 // Generate tradeups with different A/B ballot distributions (1-9, 2-8, ..., 9-1)
                 for (j in 1..9) {
-                    // Create one set of output rows for this (j, outputFloat) group.
-                    // All masters sharing the same j and outputFloat reference these outputs via the junction table.
-                    val outputIdsForGroup = mutableListOf<Int>()
-                    tradeUpOutput.skins.forEach { outputSkin ->
-                        val ballotsFromA = if (collectionA.collectionId == outputSkin.collectionId) j else 0
-                        val ballotsFromB = if (collectionB.collectionId == outputSkin.collectionId) (10 - j) else 0
-                        val totalBallots = ballotsFromA + ballotsFromB
-                        val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
-                        val probability = (totalBallots.toDouble() / 10.0) / skinsInCollection.toDouble()
+                    // Calculate a unique hash for this mathematical outcome.
+                    // Use "|" as delimiter to avoid collisions with IDs that may contain underscores.
+                    val poolHash = "${collectionA.collectionId}|${collectionB.collectionId}|${rarityId}|${j}|${outputFloat}"
 
-                        outputsToInsert.add(
-                            arrayOf(
-                                currentOutputId,
-                                outputSkin.skinId,
-                                probability,
-                                outputSkin.float ?: 0.0
+                    // Only create a new pool entry if this hash hasn't been seen before
+                    if (!poolHashMap.containsKey(poolHash)) {
+                        val poolId = currentPoolIdRef[0]
+                        poolHashMap[poolHash] = poolId
+                        pendingPools.add(arrayOf(poolId, poolHash))
+
+                        tradeUpOutput.skins.forEach { outputSkin ->
+                            val ballotsFromA = if (collectionA.collectionId == outputSkin.collectionId) j else 0
+                            val ballotsFromB = if (collectionB.collectionId == outputSkin.collectionId) (10 - j) else 0
+                            val totalBallots = ballotsFromA + ballotsFromB
+                            val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
+                            val probability = (totalBallots.toDouble() / 10.0) / skinsInCollection.toDouble()
+
+                            pendingPoolItems.add(
+                                arrayOf(poolId, outputSkin.skinId, probability, outputSkin.float ?: 0.0)
                             )
-                        )
-                        outputIdsForGroup.add(currentOutputId)
-                        currentOutputId++
+                        }
+
+                        currentPoolIdRef[0]++
                     }
+
+                    val resolvedPoolId = poolHashMap[poolHash]!!
 
                     skinsA.forEach { skinA ->
                         skinsB.forEach { skinB ->
-                            // Add Master
+                            // Add Master with reference to the shared output pool
                             mastersToInsert.add(
                                 arrayOf(
                                     collectionA.collectionId,
@@ -396,14 +402,10 @@ class TradeUpService(
                                     j,
                                     10 - j,
                                     outputFloat,
-                                    currentId
+                                    currentId,
+                                    resolvedPoolId
                                 )
                             )
-
-                            // Link this master to all output skins in this (j, outputFloat) group
-                            outputIdsForGroup.forEach { outputId ->
-                                junctionsToInsert.add(arrayOf(currentId, outputId))
-                            }
 
                             currentId++
                         }
@@ -412,7 +414,7 @@ class TradeUpService(
             }
         }
 
-        return Triple(mastersToInsert, outputsToInsert, junctionsToInsert)
+        return mastersToInsert
     }
 
 
@@ -642,7 +644,6 @@ class TradeUpService(
 
                 // Clear old data
                 TradeUpInputs.deleteWhere { TradeUpInputs.tradeUpResultId eq masterId }
-                TradeupMasterOutputs.deleteWhere { TradeupMasterOutputs.tradeupMasterId eq masterId }
 
                 // Insert input skin A
                 TradeUpInputs.insert {
@@ -666,42 +667,7 @@ class TradeUpService(
                         BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
                 }
 
-                // Insert output skins with calculated probabilities via junction table
-                val outputsByCollection = tradeUp.output.skins.groupBy { it.collectionId }
-                tradeUp.output.skins.forEach { outputSkin ->
-                    val ballotsFromA =
-                        if (tradeUp.input.tradeUpInputComponentA.collectionId == outputSkin.collectionId)
-                            tradeUp.input.tradeUpInputComponentA.amount else 0
-                    val ballotsFromB =
-                        if (tradeUp.input.tradeUpInputComponentB.collectionId == outputSkin.collectionId)
-                            tradeUp.input.tradeUpInputComponentB.amount else 0
-                    val totalBallotsForCollection = ballotsFromA + ballotsFromB
-                    val skinsInCollection = outputsByCollection[outputSkin.collectionId]?.size ?: 1
-                    val probability = (totalBallotsForCollection.toDouble() / 10.0) / skinsInCollection.toDouble()
-                    val floatVal = outputSkin.float ?: 0.0
-
-                    // Get or create the output row (unique by skinId + probability + floatValue)
-                    val outputId = TradeUpOutputs
-                        .selectAll()
-                        .where {
-                            (TradeUpOutputs.skinId eq outputSkin.skinId) and
-                                    (TradeUpOutputs.probability eq probability) and
-                                    (TradeUpOutputs.floatValue eq floatVal)
-                        }
-                        .firstOrNull()
-                        ?.get(TradeUpOutputs.id)
-                        ?: (TradeUpOutputs.insert {
-                            it[skinId] = outputSkin.skinId
-                            it[TradeUpOutputs.probability] = probability
-                            it[floatValue] = floatVal
-                        } get TradeUpOutputs.id)
-
-                    // Link master to output via junction table
-                    TradeupMasterOutputs.insert {
-                        it[tradeupMasterId] = masterId
-                        it[tradeupOutputId] = outputId
-                    }
-                }
+                // Output skins are managed by the shared OutputPool; no per-master insertion needed.
 
                 // Record snapshot for time-series analysis
                 TradeupSnapshots.insert {
@@ -850,7 +816,7 @@ class TradeUpService(
     // In TradeUpService.kt
     suspend fun deleteAllTradeUps(): Int = dbQuery {
         // This instantly empties all tables and resets auto-increment sequences
-        jdbcTemplate.execute("TRUNCATE TABLE tradeup_snapshots, tradeups_current, tradeup_master_outputs, tradeup_outputs, tradeup_inputs, tradeups_master RESTART IDENTITY CASCADE")
+        jdbcTemplate.execute("TRUNCATE TABLE tradeup_snapshots, tradeups_current, output_pool_items, tradeups_master, tradeup_inputs, output_pools RESTART IDENTITY CASCADE")
         1
     }
 
@@ -941,22 +907,22 @@ class TradeUpService(
 
     /**
      * Fetch all output skins for the given master IDs in a single query.
-     * Joins through the M:N junction table and fetches skin name from the Skins table.
+     * Joins through TradeupsMaster → OutputPoolItems → Skins.
      */
     private fun fetchOutputsByMasterIds(resultIds: List<Int>): Map<Int, List<TradeUpOutputInfo>> {
-        return (TradeupMasterOutputs
-            .join(TradeUpOutputs, JoinType.INNER,
-                additionalConstraint = { TradeupMasterOutputs.tradeupOutputId eq TradeUpOutputs.id })
+        return (TradeupsMaster
+            .join(OutputPoolItems, JoinType.INNER,
+                additionalConstraint = { TradeupsMaster.outputPoolId eq OutputPoolItems.poolId })
             .join(Skins, JoinType.INNER,
-                additionalConstraint = { TradeUpOutputs.skinId eq Skins.skinId }))
+                additionalConstraint = { OutputPoolItems.skinId eq Skins.skinId }))
             .selectAll()
-            .where { TradeupMasterOutputs.tradeupMasterId inList resultIds }
+            .where { TradeupsMaster.id inList resultIds }
             .map { row ->
-                row[TradeupMasterOutputs.tradeupMasterId] to TradeUpOutputInfo(
-                    skinId = row[TradeUpOutputs.skinId],
+                row[TradeupsMaster.id] to TradeUpOutputInfo(
+                    skinId = row[OutputPoolItems.skinId],
                     skinName = row[Skins.name],
-                    probability = row[TradeUpOutputs.probability],
-                    floatValue = row[TradeUpOutputs.floatValue]
+                    probability = row[OutputPoolItems.probability],
+                    floatValue = row[OutputPoolItems.floatValue]
                 )
             }
             .groupBy({ it.first }, { it.second })

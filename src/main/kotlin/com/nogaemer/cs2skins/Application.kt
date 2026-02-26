@@ -52,12 +52,12 @@ class SkinDatabaseInitializer {
 
             // Trade-up tables
             SchemaUtils.create(
+                OutputPools,
                 TradeupsMaster,
                 TradeupsCurrent,
                 TradeupSnapshots,
                 TradeUpInputs,
-                TradeUpOutputs,
-                TradeupMasterOutputs
+                OutputPoolItems
             )
 
             // TimescaleDB setup
