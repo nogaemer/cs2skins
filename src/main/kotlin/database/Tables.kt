@@ -173,6 +173,7 @@ object TradeupsMaster : Table("tradeups_master") {
         index("idx_tm_rarity", false, rarityId)
         index("idx_tm_collections", false, collectionAId, collectionBId)
         index("idx_tm_skins", false, skinAId, skinBId)
+        index("idx_tm_output_pool", false, outputPoolId)
         uniqueIndex(
             "uniq_tm_identity",
             collectionAId, collectionBId, rarityId, stattrak,

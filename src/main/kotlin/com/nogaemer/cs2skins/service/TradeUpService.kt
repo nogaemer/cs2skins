@@ -177,6 +177,8 @@ class TradeUpService(
             DROP INDEX IF EXISTS idx_tm_rarity;
             DROP INDEX IF EXISTS idx_tm_collections;
             DROP INDEX IF EXISTS idx_tm_skins;
+            DROP INDEX IF EXISTS idx_tm_output_pool;
+            DROP INDEX IF EXISTS idx_output_pool_items_pool;
         """.trimIndent()
             )
         }
@@ -291,6 +293,8 @@ class TradeUpService(
                 CREATE INDEX IF NOT EXISTS idx_tm_rarity ON tradeups_master (rarity_id);
                 CREATE INDEX IF NOT EXISTS idx_tm_collections ON tradeups_master (collection_a_id, collection_b_id);
                 CREATE INDEX IF NOT EXISTS idx_tm_skins ON tradeups_master (skin_a_id, skin_b_id);
+                CREATE INDEX IF NOT EXISTS idx_tm_output_pool ON tradeups_master (output_pool_id);
+                CREATE INDEX IF NOT EXISTS idx_output_pool_items_pool ON output_pool_items (pool_id);
             """.trimIndent()
             )
         }
@@ -357,8 +361,9 @@ class TradeUpService(
 
                 // Generate tradeups with different A/B ballot distributions (1-9, 2-8, ..., 9-1)
                 for (j in 1..9) {
-                    // Calculate a unique hash for this mathematical outcome
-                    val poolHash = "${collectionA.collectionId}_${collectionB.collectionId}_${rarityId}_${j}_${outputFloat}"
+                    // Calculate a unique hash for this mathematical outcome.
+                    // Use "|" as delimiter to avoid collisions with IDs that may contain underscores.
+                    val poolHash = "${collectionA.collectionId}|${collectionB.collectionId}|${rarityId}|${j}|${outputFloat}"
 
                     // Only create a new pool entry if this hash hasn't been seen before
                     if (!poolHashMap.containsKey(poolHash)) {
