@@ -162,7 +162,8 @@ object TradeupsMaster : Table("tradeups_master") {
     val amountA = integer("amount_a").nullable()
     val amountB = integer("amount_b").nullable()
     val outputFloat = double("output_float")
-    val outputPoolId = integer("output_pool_id").references(OutputPools.id)
+    val outputPoolId = integer("output_pool_id")
+        .references(OutputPools.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val createdAt = long("created_at").clientDefault { System.currentTimeMillis() }
 
     override val primaryKey = PrimaryKey(id)
