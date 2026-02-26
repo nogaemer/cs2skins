@@ -50,25 +50,32 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
     }
 
     override suspend fun createAll(skinPrices: List<SkinPrice>) = dbQuery {
+        if (skinPrices.isEmpty()) return@dbQuery
         val now = System.currentTimeMillis()
-        skinPrices.forEach { skinPrice ->
-            val wearId = ensureWearExists(skinPrice.wear)
 
-            SkinPricesCurrent.upsert {
-                it[SkinPricesCurrent.skinId] = skinPrice.skinId
-                it[SkinPricesCurrent.wearId] = wearId
-                it[SkinPricesCurrent.price] = skinPrice.price
-                it[SkinPricesCurrent.quantity] = skinPrice.quantity
-                it[SkinPricesCurrent.updatedAt] = now
-            }
+        // Batch-ensure all unique wear conditions exist in one go
+        val uniqueWears = skinPrices.map { it.wear }.distinctBy { it.wearId }
+        WearConditions.batchInsert(uniqueWears, ignore = true) { wear ->
+            this[WearConditions.wearId] = wear.wearId
+            this[WearConditions.name] = wear.name
+        }
 
-            SkinPriceHistory.insert {
-                it[SkinPriceHistory.skinId] = skinPrice.skinId
-                it[SkinPriceHistory.wearId] = wearId
-                it[SkinPriceHistory.recordedAt] = now
-                it[SkinPriceHistory.price] = skinPrice.price
-                it[SkinPriceHistory.quantity] = skinPrice.quantity
-            }
+        // Bulk upsert current prices (INSERT … ON CONFLICT DO UPDATE)
+        SkinPricesCurrent.batchUpsert(skinPrices) { skinPrice ->
+            this[SkinPricesCurrent.skinId] = skinPrice.skinId
+            this[SkinPricesCurrent.wearId] = skinPrice.wear.wearId
+            this[SkinPricesCurrent.price] = skinPrice.price
+            this[SkinPricesCurrent.quantity] = skinPrice.quantity
+            this[SkinPricesCurrent.updatedAt] = now
+        }
+
+        // Bulk insert history snapshots
+        SkinPriceHistory.batchInsert(skinPrices) { skinPrice ->
+            this[SkinPriceHistory.skinId] = skinPrice.skinId
+            this[SkinPriceHistory.wearId] = skinPrice.wear.wearId
+            this[SkinPriceHistory.recordedAt] = now
+            this[SkinPriceHistory.price] = skinPrice.price
+            this[SkinPriceHistory.quantity] = skinPrice.quantity
         }
     }
 
