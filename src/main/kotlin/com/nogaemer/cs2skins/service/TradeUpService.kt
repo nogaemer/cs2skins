@@ -8,6 +8,7 @@ import kotlinx.coroutines.withContext
 import models.CollectionWithSkins
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.postgresql.copy.CopyManager
 import org.postgresql.core.BaseConnection
@@ -426,7 +427,8 @@ class TradeUpService(
      * then a new [TradeupSnapshots] row is appended and [TradeupsCurrent] is upserted.
      * Input/output skin details are refreshed as well.
      * Masters are fetched in chunks of [PRICE_CALC_CHUNK_SIZE] to avoid loading millions
-     * of rows into memory at once.
+     * of rows into memory at once. All DB writes for each chunk are done in a single
+     * bulk COPY / batch-upsert operation instead of row-by-row inserts.
      */
     suspend fun calculatePricesForMasters(stattrak: Boolean = false): Int = withContext(Dispatchers.IO) {
         // Initialize progress tracking
@@ -466,14 +468,26 @@ class TradeUpService(
             val chunk = fetchMasterChunk(stattrak, lastId)
             if (chunk.isEmpty()) break
 
-            // Process each master in the chunk
+            // Calculate metrics for all masters in the chunk (in-memory, no DB writes yet)
+            val chunkResults = mutableListOf<MasterPriceResult>()
             for (masterRow in chunk) {
-                processedCount += calculateAndSaveMasterPrice(
+                val result = calculateMasterPrice(
                     masterRow = masterRow,
                     rarityOrder = rarityOrder,
                     rarityIdToName = rarityIdToName,
                     getCollectionFunc = ::getOrFetchCollection
                 )
+                if (result != null) {
+                    chunkResults.add(result)
+                    calculatePricesProcessed.incrementAndGet()
+                }
+            }
+
+            // Bulk-persist all results for this chunk in one set of DB operations
+            if (chunkResults.isNotEmpty()) {
+                val (_, duration) = measureTimedValue { bulkSavePriceData(chunkResults) }
+                logger.warn("Bulk saved ${chunkResults.size} masters in ${duration.inWholeMilliseconds}ms")
+                processedCount += chunkResults.size
             }
 
             lastId = chunk.last().id
@@ -531,32 +545,54 @@ class TradeUpService(
     )
 
     /**
-     * Calculate and persist price/ROI data for a single master trade-up.
-     * Returns 1 if successful, 0 if skipped due to validation.
+     * Holds the computed price/ROI result for one master trade-up, ready to be bulk-persisted.
      */
-    private suspend fun calculateAndSaveMasterPrice(
+    private data class MasterPriceResult(
+        val masterId: Int,
+        val now: Long,
+        val roiValue: Double,
+        val profitValue: Double,
+        val inputCostValue: Double,
+        val outputCostValue: Double,
+        val inputASkinId: String,
+        val inputASkinName: String,
+        val inputAAmount: Int,
+        val inputAFloat: Double,
+        val inputAPrice: BigDecimal,
+        val inputBSkinId: String,
+        val inputBSkinName: String,
+        val inputBAmount: Int,
+        val inputBFloat: Double,
+        val inputBPrice: BigDecimal
+    )
+
+    /**
+     * Calculate price/ROI data for a single master trade-up without touching the DB.
+     * Returns null if the master should be skipped.
+     */
+    private suspend fun calculateMasterPrice(
         masterRow: MasterChunkRow,
         rarityOrder: List<String>,
         rarityIdToName: Map<String, String>,
         getCollectionFunc: suspend (String) -> models.CollectionWithSkins?
-    ): Int {
+    ): MasterPriceResult? {
         // Validate and extract required fields
         val masterId = masterRow.id
-        val rarityId = masterRow.rarityId ?: return 0
-        val rarityName = rarityIdToName[rarityId] ?: return 0
+        val rarityId = masterRow.rarityId ?: return null
+        val rarityName = rarityIdToName[rarityId] ?: return null
         val rarityIdx = rarityOrder.indexOf(rarityName)
-        if (rarityIdx < 0 || rarityIdx + 1 >= rarityOrder.size) return 0
+        if (rarityIdx < 0 || rarityIdx + 1 >= rarityOrder.size) return null
 
         // Fetch collection data with caching
-        val collectionWithSkinsA = getCollectionFunc(masterRow.collectionAId) ?: return 0
-        val collectionWithSkinsB = getCollectionFunc(masterRow.collectionBId) ?: return 0
+        val collectionWithSkinsA = getCollectionFunc(masterRow.collectionAId) ?: return null
+        val collectionWithSkinsB = getCollectionFunc(masterRow.collectionBId) ?: return null
 
         // Validate input skins exist
         val skinA = collectionWithSkinsA.skins[rarityName].orEmpty().find { it.skinId == masterRow.skinAId }
         val skinB = collectionWithSkinsB.skins[rarityName].orEmpty().find { it.skinId == masterRow.skinBId }
         if (skinA == null || skinB == null) {
             logger.warn("Master $masterId: skin(s) no longer available")
-            return 0
+            return null
         }
 
         // Calculate trade-up metrics
@@ -568,14 +604,98 @@ class TradeUpService(
             collectionWithSkinsB = collectionWithSkinsB,
             skinA = skinA,
             skinB = skinB
-        ) ?: return 0
+        ) ?: return null
 
-        // Persist calculated data to database
-        saveMasterPriceData(masterId, tradeUp)
-
-        calculatePricesProcessed.incrementAndGet()
-        return 1
+        val now = System.currentTimeMillis()
+        return MasterPriceResult(
+            masterId = masterId,
+            now = now,
+            roiValue = tradeUp.roiWithDropChange.let { if (it.isFinite()) it else 0.0 },
+            profitValue = tradeUp.profitWithDropChange.let { if (it.isFinite()) it else 0.0 },
+            inputCostValue = tradeUp.inputCostWithDropChange.let { if (it.isFinite()) it else 0.0 },
+            outputCostValue = tradeUp.expectedReturn.let { if (it.isFinite()) it else 0.0 },
+            inputASkinId = tradeUp.input.tradeUpInputComponentA.skin.skinId,
+            inputASkinName = tradeUp.input.tradeUpInputComponentA.skin.name,
+            inputAAmount = tradeUp.input.tradeUpInputComponentA.amount,
+            inputAFloat = tradeUp.input.costsFloatInput?.floatA ?: 0.0,
+            inputAPrice = BigDecimal(tradeUp.input.tradeUpInputComponentA.skin.price.values.firstOrNull() ?: 0.0),
+            inputBSkinId = tradeUp.input.tradeUpInputComponentB.skin.skinId,
+            inputBSkinName = tradeUp.input.tradeUpInputComponentB.skin.name,
+            inputBAmount = tradeUp.input.tradeUpInputComponentB.amount,
+            inputBFloat = tradeUp.input.costsFloatInput?.floatB ?: 0.0,
+            inputBPrice = BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
+        )
     }
+
+    /**
+     * Bulk-persist all price data for a chunk of masters using COPY FROM STDIN for inserts
+     * and batchUpsert for the current-metrics table.
+     *
+     * Write order:
+     * 1. Delete stale tradeup_inputs rows for every master in the chunk (single IN-list DELETE).
+     * 2. COPY new tradeup_inputs rows (2 per master) via PostgreSQL COPY FROM STDIN.
+     * 3. COPY new tradeup_snapshots rows (1 per master) via PostgreSQL COPY FROM STDIN.
+     * 4. batchUpsert tradeups_current rows (1 per master).
+     */
+    private suspend fun bulkSavePriceData(results: List<MasterPriceResult>) = withContext(Dispatchers.IO) {
+        val masterIds = results.map { it.masterId }
+
+        // 1. Delete stale inputs in one query
+        dbQuery {
+            TradeUpInputs.deleteWhere { TradeUpInputs.tradeUpResultId inList masterIds }
+        }
+
+        // 2. COPY tradeup_inputs (2 rows per master: skin A and skin B)
+        // String fields are CSV-quoted to safely handle any special characters.
+        val inputsTsv = StringBuilder()
+        for (r in results) {
+            inputsTsv.append("${r.masterId}\t${r.inputASkinId.csvQuote()}\t${r.inputASkinName.csvQuote()}\t${r.inputAAmount}\t${r.inputAFloat}\t${r.inputAPrice}\n")
+            inputsTsv.append("${r.masterId}\t${r.inputBSkinId.csvQuote()}\t${r.inputBSkinName.csvQuote()}\t${r.inputBAmount}\t${r.inputBFloat}\t${r.inputBPrice}\n")
+        }
+        jdbcTemplate.execute { conn: Connection ->
+            val pgConn = conn.unwrap(BaseConnection::class.java)
+            val copyManager = CopyManager(pgConn)
+            StringReader(inputsTsv.toString()).use { reader ->
+                copyManager.copyIn(
+                    "COPY tradeup_inputs (tradeup_result_id, skin_id, skin_name, amount, float_value, price_per_unit) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')",
+                    reader
+                )
+            }
+            null
+        }
+
+        // 3. COPY tradeup_snapshots (1 row per master)
+        val snapshotsTsv = StringBuilder()
+        for (r in results) {
+            snapshotsTsv.append("${r.masterId}\t${r.now}\t${r.roiValue}\t${r.profitValue}\t${r.inputCostValue}\t${r.outputCostValue}\n")
+        }
+        jdbcTemplate.execute { conn: Connection ->
+            val pgConn = conn.unwrap(BaseConnection::class.java)
+            val copyManager = CopyManager(pgConn)
+            StringReader(snapshotsTsv.toString()).use { reader ->
+                copyManager.copyIn(
+                    "COPY tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')",
+                    reader
+                )
+            }
+            null
+        }
+
+        // 4. batchUpsert tradeups_current (1 row per master)
+        dbQuery {
+            TradeupsCurrent.batchUpsert(results, keys = arrayOf(TradeupsCurrent.tradeupId)) { r ->
+                this[TradeupsCurrent.tradeupId] = r.masterId
+                this[TradeupsCurrent.roi] = r.roiValue
+                this[TradeupsCurrent.profit] = r.profitValue
+                this[TradeupsCurrent.inputCost] = r.inputCostValue
+                this[TradeupsCurrent.outputCost] = r.outputCostValue
+                this[TradeupsCurrent.updatedAt] = r.now
+            }
+        }
+    }
+
+    /** Wraps a string value in CSV double-quotes, escaping any internal double-quotes as "". */
+    private fun String.csvQuote() = "\"${this.replace("\"", "\"\"")}\""
 
     /**
      * Calculate all metrics (ROI, profit, inputs, outputs) for a trade-up.
@@ -622,75 +742,6 @@ class TradeUpService(
 
         // Build final trade-up object
         return TradeUp(TradeUpInput(componentA, componentB, bestInput), tradeUpOutput)
-    }
-
-    /**
-     * Insert/update all trade-up related data in database:
-     * - Input skin details
-     * - Output skin details with probabilities (via junction table)
-     * - Price snapshot
-     * - Current metrics (for fast queries)
-     */
-    private suspend fun saveMasterPriceData(masterId: Int, tradeUp: TradeUp) {
-        val (_, duration) = dbQuery {
-            measureTimedValue {
-                val now = System.currentTimeMillis()
-
-                // Extract and normalize metrics (handle NaN/Infinity)
-                val roiValue = tradeUp.roiWithDropChange.let { if (it.isFinite()) it else 0.0 }
-                val profitValue = tradeUp.profitWithDropChange.let { if (it.isFinite()) it else 0.0 }
-                val inputCostValue = tradeUp.inputCostWithDropChange.let { if (it.isFinite()) it else 0.0 }
-                val outputCostValue = tradeUp.expectedReturn.let { if (it.isFinite()) it else 0.0 }
-
-                // Clear old data
-                TradeUpInputs.deleteWhere { TradeUpInputs.tradeUpResultId eq masterId }
-
-                // Insert input skin A
-                TradeUpInputs.insert {
-                    it[tradeUpResultId] = masterId
-                    it[skinId] = tradeUp.input.tradeUpInputComponentA.skin.skinId
-                    it[skinName] = tradeUp.input.tradeUpInputComponentA.skin.name
-                    it[amount] = tradeUp.input.tradeUpInputComponentA.amount
-                    it[floatValue] = tradeUp.input.costsFloatInput?.floatA ?: 0.0
-                    it[pricePerUnit] =
-                        BigDecimal(tradeUp.input.tradeUpInputComponentA.skin.price.values.firstOrNull() ?: 0.0)
-                }
-
-                // Insert input skin B
-                TradeUpInputs.insert {
-                    it[tradeUpResultId] = masterId
-                    it[skinId] = tradeUp.input.tradeUpInputComponentB.skin.skinId
-                    it[skinName] = tradeUp.input.tradeUpInputComponentB.skin.name
-                    it[amount] = tradeUp.input.tradeUpInputComponentB.amount
-                    it[floatValue] = tradeUp.input.costsFloatInput?.floatB ?: 0.0
-                    it[pricePerUnit] =
-                        BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
-                }
-
-                // Output skins are managed by the shared OutputPool; no per-master insertion needed.
-
-                // Record snapshot for time-series analysis
-                TradeupSnapshots.insert {
-                    it[tradeupId] = masterId
-                    it[snapshotTime] = now
-                    it[roi] = roiValue
-                    it[profit] = profitValue
-                    it[inputCost] = inputCostValue
-                    it[outputCost] = outputCostValue
-                }
-
-                // Update current metrics for fast queries
-                TradeupsCurrent.upsert(keys = arrayOf(TradeupsCurrent.tradeupId)) {
-                    it[tradeupId] = masterId
-                    it[roi] = roiValue
-                    it[profit] = profitValue
-                    it[inputCost] = inputCostValue
-                    it[outputCost] = outputCostValue
-                    it[updatedAt] = now
-                }
-            }
-        }.let { it.value to it.duration }
-        logger.warn("Master $masterId price calculation and save took ${duration.inWholeMilliseconds}ms")
     }
 
     // ============ QUERY METHODS ============
