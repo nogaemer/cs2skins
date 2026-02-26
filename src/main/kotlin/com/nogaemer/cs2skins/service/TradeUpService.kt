@@ -299,6 +299,7 @@ class TradeUpService(
         dbQuery {
             jdbcTemplate.execute("SELECT setval('tradeups_master_id_seq', $insertedCount)")
             jdbcTemplate.execute("SELECT setval('output_pools_id_seq', ${currentPoolIdRef[0] - 1})")
+            jdbcTemplate.execute("SELECT setval('output_pool_items_id_seq', (SELECT COALESCE(MAX(id), 0) FROM output_pool_items))")
         }
 
 
