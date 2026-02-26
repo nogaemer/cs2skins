@@ -124,7 +124,8 @@ object OutputPoolItems : Table("output_pool_items") {
         onDelete = ReferenceOption.CASCADE,
         onUpdate = ReferenceOption.CASCADE
     )
-    val skinId = varchar("skin_id", 255).references(Skins.skinId)
+    val skinId = varchar("skin_id", 255)
+        .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val probability = double("probability")
     val floatValue = double("float_value")
 
