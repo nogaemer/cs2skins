@@ -125,6 +125,10 @@ object OutputPoolItems : Table("output_pool_items") {
     val floatValue = double("float_value")
 
     override val primaryKey = PrimaryKey(id)
+
+    init {
+        index("idx_output_pool_items_pool", false, poolId)
+    }
 }
 
 /**
