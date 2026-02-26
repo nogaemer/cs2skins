@@ -119,7 +119,11 @@ object OutputPools : Table("output_pools") {
 
 object OutputPoolItems : Table("output_pool_items") {
     val id = integer("id").autoIncrement()
-    val poolId = integer("pool_id").references(OutputPools.id)
+    val poolId = integer("pool_id").references(
+        OutputPools.id,
+        onDelete = ReferenceOption.CASCADE,
+        onUpdate = ReferenceOption.CASCADE
+    )
     val skinId = varchar("skin_id", 255).references(Skins.skinId)
     val probability = double("probability")
     val floatValue = double("float_value")
