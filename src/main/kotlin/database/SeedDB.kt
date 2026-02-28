@@ -2,6 +2,7 @@ package database
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.jetbrains.exposed.sql.insertIgnore
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.json.JSONArray
@@ -44,16 +45,30 @@ class SeedDB {
     suspend fun seedSkins() = withContext(Dispatchers.IO) {
         skinRepo.deleteAll()
 
-        // Resolve Steam source ID and USD currency ID once up-front.
+        // Resolve Steam source ID and USD currency ID, inserting them if not yet present
+        // (e.g. on a fresh DB that hasn't had migration 004 run manually).
         val steamSourceId = transaction {
             PriceSources.selectAll().where { PriceSources.name eq "steam" }
                 .firstOrNull()?.get(PriceSources.id)
-                ?: error("price_sources row for 'steam' not found — run migration 004 first")
+                ?: PriceSources.insertIgnore {
+                    it[PriceSources.name]    = "steam"
+                    it[PriceSources.baseUrl] = "https://steamcommunity.com/market"
+                }.let {
+                    PriceSources.selectAll().where { PriceSources.name eq "steam" }
+                        .first()[PriceSources.id]
+                }
         }
         val usdCurrencyId = transaction {
             Currencies.selectAll().where { Currencies.code eq "USD" }
                 .firstOrNull()?.get(Currencies.id)
-                ?: error("currencies row for 'USD' not found — run migration 004 first")
+                ?: Currencies.insertIgnore {
+                    it[Currencies.code]   = "USD"
+                    it[Currencies.symbol] = "$"
+                    it[Currencies.isBase] = true
+                }.let {
+                    Currencies.selectAll().where { Currencies.code eq "USD" }
+                        .first()[Currencies.id]
+                }
         }
 
         val skinsUrl =

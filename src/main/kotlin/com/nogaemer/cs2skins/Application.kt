@@ -3,6 +3,8 @@ package com.nogaemer.cs2skins
 import database.*
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.Transaction
+import org.jetbrains.exposed.sql.insertIgnore
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.slf4j.LoggerFactory
 import org.springframework.boot.autoconfigure.SpringBootApplication
@@ -37,6 +39,14 @@ class SkinDatabaseInitializer {
                 Skins
             )
 
+            // Pricing reference tables — must exist before SkinPricesCurrent / SkinPriceHistory
+            // because those tables hold FKs to price_sources and currencies.
+            SchemaUtils.create(
+                PriceSources,
+                Currencies
+            )
+            seedPricingReferenceData()
+
             // Price tables (current snapshot + history hypertable)
             SchemaUtils.create(
                 SkinPricesCurrent,
@@ -55,6 +65,36 @@ class SkinDatabaseInitializer {
 
             // TimescaleDB setup
             setupTimescaleDB()
+        }
+    }
+
+    /**
+     * Seeds the minimum required rows in `price_sources` and `currencies` so that a fresh
+     * database is fully functional without requiring a separate manual migration step.
+     * Uses INSERT … IGNORE so subsequent restarts are idempotent.
+     */
+    private fun Transaction.seedPricingReferenceData() {
+        listOf(
+            "steam"   to "https://steamcommunity.com/market",
+            "csfloat" to "https://csfloat.com",
+            "buff163" to "https://buff.163.com"
+        ).forEach { (name, url) ->
+            PriceSources.insertIgnore {
+                it[PriceSources.name]    = name
+                it[PriceSources.baseUrl] = url
+            }
+        }
+
+        listOf(
+            Triple("USD", "$",  true),
+            Triple("EUR", "€",  false),
+            Triple("CNY", "¥",  false)
+        ).forEach { (code, symbol, isBase) ->
+            Currencies.insertIgnore {
+                it[Currencies.code]   = code
+                it[Currencies.symbol] = symbol
+                it[Currencies.isBase] = isBase
+            }
         }
     }
 

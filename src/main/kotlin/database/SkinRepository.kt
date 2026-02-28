@@ -94,9 +94,17 @@ class SkinRepository : SkinRepositoryInterface {
 
         if (skins.isEmpty()) return@dbQuery emptyList()
 
-        // fetch all prices for these skins in a single query to avoid N+1
+        // Fetch all prices for these skins in a single query to avoid N+1.
+        // Join with Currencies and filter to the base currency (is_base = true, i.e. USD)
+        // so that when multiple sources provide prices for the same skin+wear the
+        // selection is deterministic.  Results are ordered newest-first so that the
+        // first occurrence of each (skinId, wear) pair is the most recently updated price.
         val skinIds = skins.map { it.skinId }
-        val pricesBySkin = SkinPricesCurrent.selectAll().where { SkinPricesCurrent.skinId inList skinIds }
+        val pricesBySkin = SkinPricesCurrent
+            .join(Currencies, JoinType.INNER, SkinPricesCurrent.currencyId, Currencies.id)
+            .selectAll()
+            .where { (SkinPricesCurrent.skinId inList skinIds) and (Currencies.isBase eq true) }
+            .orderBy(SkinPricesCurrent.updatedAt to SortOrder.DESC)
             .mapNotNull { r ->
                 val wear = CSWear.fromId(r[SkinPricesCurrent.wearId]) ?: return@mapNotNull null
                 val skinPrice = SkinPrice(
@@ -111,7 +119,8 @@ class SkinRepository : SkinRepositoryInterface {
             }
             .groupBy({ it.first }, { it.second })
             .mapValues { entry ->
-                entry.value.associate { it.first to it.second }.toMutableMap()
+                // distinctBy keeps the first (most-recently-updated) price per wear.
+                entry.value.distinctBy { it.first }.associate { it.first to it.second }.toMutableMap()
             }
 
         skins.map { skin ->
@@ -144,9 +153,16 @@ class SkinRepository : SkinRepositoryInterface {
         
         if (skins.isEmpty()) return@dbQuery emptyList()
 
-        // Fetch all prices for filtered skins in a single query to avoid N+1
+        // Fetch all prices for filtered skins in a single query to avoid N+1.
+        // Filter to base currency (is_base = true) so that prices from multiple sources
+        // are deterministically reduced to one entry per (skinId, wear) — the most
+        // recently updated price in the canonical currency.
         val skinIds = skins.map { it.skinId }
-        val pricesBySkin = SkinPricesCurrent.selectAll().where { SkinPricesCurrent.skinId inList skinIds }
+        val pricesBySkin = SkinPricesCurrent
+            .join(Currencies, JoinType.INNER, SkinPricesCurrent.currencyId, Currencies.id)
+            .selectAll()
+            .where { (SkinPricesCurrent.skinId inList skinIds) and (Currencies.isBase eq true) }
+            .orderBy(SkinPricesCurrent.updatedAt to SortOrder.DESC)
             .mapNotNull { r ->
                 val wear = CSWear.fromId(r[SkinPricesCurrent.wearId]) ?: return@mapNotNull null
                 val skinPrice = SkinPrice(
@@ -161,7 +177,8 @@ class SkinRepository : SkinRepositoryInterface {
             }
             .groupBy({ it.first }, { it.second })
             .mapValues { entry ->
-                entry.value.associate { it.first to it.second }.toMutableMap()
+                // distinctBy keeps the first (most-recently-updated) price per wear.
+                entry.value.distinctBy { it.first }.associate { it.first to it.second }.toMutableMap()
             }
 
         skins.map { skin ->
