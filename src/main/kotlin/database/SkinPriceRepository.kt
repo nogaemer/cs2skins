@@ -363,6 +363,8 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
             conditions.append(" AND c.code = ?")
             args.add(VarCharColumnType() to it)
         }
+        args.add(IntegerColumnType() to params.limit)
+        args.add(IntegerColumnType() to params.offset)
         val sql = """
             SELECT time_bucket(?::interval, sph.recorded_at) AS bucket,
                    sph.wear_id,
@@ -379,6 +381,7 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
             WHERE  $conditions
             GROUP  BY 1, sph.wear_id, sph.source_id, ps.name, sph.currency_id, c.code
             ORDER  BY 1 DESC
+            LIMIT  ? OFFSET ?
         """.trimIndent()
         exec(sql, args, explicitStatementType = StatementType.SELECT) { rs ->
             val results = mutableListOf<BucketedPriceResponse>()
