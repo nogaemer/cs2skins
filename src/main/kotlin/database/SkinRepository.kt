@@ -73,56 +73,50 @@ class SkinRepository : SkinRepositoryInterface {
 
 
     override suspend fun findById(skinId: String): SkinDTO? = dbQuery {
-        Skins.selectAll().where { Skins.skinId eq skinId }
-            .map { rowToSkin(it) }
-            .singleOrNull()
+        val row = Skins.selectAll().where { Skins.skinId eq skinId }.singleOrNull()
+            ?: return@dbQuery null
+        val wid = row[Skins.weaponId]!!
+        val rid = row[Skins.rarityId]!!
+        val weaponMap = loadWeapons(listOf(wid))
+        val rarityMap = loadRarities(listOf(rid))
+        val skin = rowToSkin(row, weaponMap, rarityMap)
+        val prices = loadPricesBySkin(listOf(skinId))[skinId]
+        if (!prices.isNullOrEmpty()) skin.copy(price = prices) else skin
     }
 
     override suspend fun findAll(): List<SkinDTO> = dbQuery {
-        Skins.selectAll().map { rowToSkin(it) }
+        val rows = Skins.selectAll().toList()
+        if (rows.isEmpty()) return@dbQuery emptyList()
+
+        val weaponMap = loadWeapons(rows.mapNotNull { it[Skins.weaponId] }.distinct())
+        val rarityMap = loadRarities(rows.mapNotNull { it[Skins.rarityId] }.distinct())
+        val skins = rows.map { rowToSkin(it, weaponMap, rarityMap) }
+
+        val pricesBySkin = loadPricesBySkin(skins.map { it.skinId })
+
+        skins.map { skin ->
+            val prices = pricesBySkin[skin.skinId]
+            if (!prices.isNullOrEmpty()) skin.copy(price = prices) else skin
+        }
     }
 
     override suspend fun findByCollection(collectionId: String): List<SkinDTO> = dbQuery {
-        Skins.selectAll().where { Skins.collectionId eq collectionId }
-            .map { rowToSkin(it) }
+        val rows = Skins.selectAll().where { Skins.collectionId eq collectionId }.toList()
+        if (rows.isEmpty()) return@dbQuery emptyList()
+        val weaponMap = loadWeapons(rows.mapNotNull { it[Skins.weaponId] }.distinct())
+        val rarityMap = loadRarities(rows.mapNotNull { it[Skins.rarityId] }.distinct())
+        rows.map { rowToSkin(it, weaponMap, rarityMap) }
     }
 
     override suspend fun findByCollectionWithPrice(collectionId: String, stattrak: Boolean): List<SkinDTO> = dbQuery {
-        // fetch skins for collection
-        val skins = Skins.selectAll().where { (Skins.collectionId eq collectionId) and (Skins.stattrak eq stattrak)}
-            .map { rowToSkin(it) }
-
-        if (skins.isEmpty()) return@dbQuery emptyList()
-
-        // Fetch all prices for these skins in a single query to avoid N+1.
-        // Join with Currencies and filter to the base currency (is_base = true, i.e. USD)
-        // so that when multiple sources provide prices for the same skin+wear the
-        // selection is deterministic.  Results are ordered newest-first so that the
-        // first occurrence of each (skinId, wear) pair is the most recently updated price.
-        val skinIds = skins.map { it.skinId }
-        val pricesBySkin = SkinPricesCurrent
-            .join(Currencies, JoinType.INNER, SkinPricesCurrent.currencyId, Currencies.id)
-            .selectAll()
-            .where { (SkinPricesCurrent.skinId inList skinIds) and (Currencies.isBase eq true) }
-            .orderBy(SkinPricesCurrent.updatedAt to SortOrder.DESC)
-            .mapNotNull { r ->
-                val wear = CSWear.fromId(r[SkinPricesCurrent.wearId]) ?: return@mapNotNull null
-                val skinPrice = SkinPrice(
-                    r[SkinPricesCurrent.skinId],
-                    WearCondition(r[SkinPricesCurrent.wearId], ""),
-                    r[SkinPricesCurrent.sourceId],
-                    r[SkinPricesCurrent.currencyId],
-                    r[SkinPricesCurrent.price],
-                    r[SkinPricesCurrent.quantity]
-                )
-                r[SkinPricesCurrent.skinId] to (wear to skinPrice)
-            }
-            .groupBy({ it.first }, { it.second })
-            .mapValues { entry ->
-                // distinctBy keeps the first (most-recently-updated) price per wear.
-                entry.value.distinctBy { it.first }.associate { it.first to it.second }.toMutableMap()
-            }
-
+        val rows = Skins.selectAll()
+            .where { (Skins.collectionId eq collectionId) and (Skins.stattrak eq stattrak) }
+            .toList()
+        if (rows.isEmpty()) return@dbQuery emptyList()
+        val weaponMap = loadWeapons(rows.mapNotNull { it[Skins.weaponId] }.distinct())
+        val rarityMap = loadRarities(rows.mapNotNull { it[Skins.rarityId] }.distinct())
+        val skins = rows.map { rowToSkin(it, weaponMap, rarityMap) }
+        val pricesBySkin = loadPricesBySkin(skins.map { it.skinId })
         skins.map { skin ->
             val latest = pricesBySkin[skin.skinId]
             if (!latest.isNullOrEmpty()) skin.copy(price = latest) else skin
@@ -149,38 +143,13 @@ class SkinRepository : SkinRepositoryInterface {
             }
         }
         
-        val skins = query.map { rowToSkin(it) }
-        
-        if (skins.isEmpty()) return@dbQuery emptyList()
+        val rows = query.toList()
+        if (rows.isEmpty()) return@dbQuery emptyList()
+        val weaponMap = loadWeapons(rows.mapNotNull { it[Skins.weaponId] }.distinct())
+        val rarityMap = loadRarities(rows.mapNotNull { it[Skins.rarityId] }.distinct())
+        val skins = rows.map { rowToSkin(it, weaponMap, rarityMap) }
 
-        // Fetch all prices for filtered skins in a single query to avoid N+1.
-        // Filter to base currency (is_base = true) so that prices from multiple sources
-        // are deterministically reduced to one entry per (skinId, wear) — the most
-        // recently updated price in the canonical currency.
-        val skinIds = skins.map { it.skinId }
-        val pricesBySkin = SkinPricesCurrent
-            .join(Currencies, JoinType.INNER, SkinPricesCurrent.currencyId, Currencies.id)
-            .selectAll()
-            .where { (SkinPricesCurrent.skinId inList skinIds) and (Currencies.isBase eq true) }
-            .orderBy(SkinPricesCurrent.updatedAt to SortOrder.DESC)
-            .mapNotNull { r ->
-                val wear = CSWear.fromId(r[SkinPricesCurrent.wearId]) ?: return@mapNotNull null
-                val skinPrice = SkinPrice(
-                    r[SkinPricesCurrent.skinId],
-                    WearCondition(r[SkinPricesCurrent.wearId], ""),
-                    r[SkinPricesCurrent.sourceId],
-                    r[SkinPricesCurrent.currencyId],
-                    r[SkinPricesCurrent.price],
-                    r[SkinPricesCurrent.quantity]
-                )
-                r[SkinPricesCurrent.skinId] to (wear to skinPrice)
-            }
-            .groupBy({ it.first }, { it.second })
-            .mapValues { entry ->
-                // distinctBy keeps the first (most-recently-updated) price per wear.
-                entry.value.distinctBy { it.first }.associate { it.first to it.second }.toMutableMap()
-            }
-
+        val pricesBySkin = loadPricesBySkin(skins.map { it.skinId })
         skins.map { skin ->
             val latest = pricesBySkin[skin.skinId]
             if (!latest.isNullOrEmpty()) skin.copy(price = latest) else skin
@@ -188,13 +157,19 @@ class SkinRepository : SkinRepositoryInterface {
     }
 
     override suspend fun findByWeapon(weaponId: String): List<SkinDTO> = dbQuery {
-        Skins.selectAll().where { Skins.weaponId eq weaponId }
-            .map { rowToSkin(it) }
+        val rows = Skins.selectAll().where { Skins.weaponId eq weaponId }.toList()
+        if (rows.isEmpty()) return@dbQuery emptyList()
+        val weaponMap = loadWeapons(rows.mapNotNull { it[Skins.weaponId] }.distinct())
+        val rarityMap = loadRarities(rows.mapNotNull { it[Skins.rarityId] }.distinct())
+        rows.map { rowToSkin(it, weaponMap, rarityMap) }
     }
 
     override suspend fun findByRarity(rarityId: String): List<SkinDTO> = dbQuery {
-        Skins.selectAll().where { Skins.rarityId eq rarityId }
-            .map { rowToSkin(it) }
+        val rows = Skins.selectAll().where { Skins.rarityId eq rarityId }.toList()
+        if (rows.isEmpty()) return@dbQuery emptyList()
+        val weaponMap = loadWeapons(rows.mapNotNull { it[Skins.weaponId] }.distinct())
+        val rarityMap = loadRarities(rows.mapNotNull { it[Skins.rarityId] }.distinct())
+        rows.map { rowToSkin(it, weaponMap, rarityMap) }
     }
 
     override suspend fun findWithDetails(skinId: String): SkinWithDetails? = dbQuery {
@@ -237,38 +212,80 @@ class SkinRepository : SkinRepositoryInterface {
         Skins.deleteAll() > 0
     }
 
-    private fun rowToSkin(row: ResultRow) = SkinDTO(
-        skinId = row[Skins.skinId],
-        collectionId = row[Skins.collectionId],
-        name = row[Skins.name],
-        weapon = run {
-            val wid = row[Skins.weaponId]
-            Weapons.selectAll().where { Weapons.weaponId eq wid!! }
-                .map { Weapon(weaponId = it[Weapons.weaponId], name = it[Weapons.name], image = it[Weapons.image]) }
-                .singleOrNull() ?: Weapon(weaponId = wid!!, name = "", image = "")
-        },
-        patternId = row[Skins.patternId],
-        patternName = row[Skins.patternName],
-        minFloat = row[Skins.minFloat],
-        maxFloat = row[Skins.maxFloat],
-        rarity = run {
-            val rid = row[Skins.rarityId]
-            Rarities.selectAll().where { Rarities.rarityId eq rid!! }
-                .map {
-                    Rarity(
-                        rarityId = it[Rarities.rarityId],
-                        name = it[Rarities.name],
-                        colorHex = it[Rarities.colorHex]
-                    )
-                }
-                .singleOrNull() ?: Rarity(rarityId = rid!!, name = "", colorHex = "")
-        },
-        stattrak = row[Skins.stattrak],
-        image = row[Skins.image]
-    )
+    /**
+     * Maps a [ResultRow] to a [SkinDTO] using pre-loaded weapon and rarity lookup maps.
+     * This avoids N+1 queries when converting a large result set — callers should build
+     * the maps once via [loadWeapons] / [loadRarities] and pass them in.
+     */
+    private fun rowToSkin(
+        row: ResultRow,
+        weaponMap: Map<String, Weapon>,
+        rarityMap: Map<String, Rarity>
+    ): SkinDTO {
+        val wid = row[Skins.weaponId]!!
+        val rid = row[Skins.rarityId]!!
+        return SkinDTO(
+            skinId = row[Skins.skinId],
+            collectionId = row[Skins.collectionId],
+            name = row[Skins.name],
+            weapon = weaponMap[wid] ?: Weapon(weaponId = wid, name = "", image = null),
+            patternId = row[Skins.patternId],
+            patternName = row[Skins.patternName],
+            minFloat = row[Skins.minFloat],
+            maxFloat = row[Skins.maxFloat],
+            rarity = rarityMap[rid] ?: Rarity(rarityId = rid, name = "", colorHex = null),
+            stattrak = row[Skins.stattrak],
+            image = row[Skins.image]
+        )
+    }
+
+    // ── Bulk-load helpers ────────────────────────────────────────────────────
+
+    private fun loadWeapons(weaponIds: List<String>): Map<String, Weapon> =
+        if (weaponIds.isEmpty()) emptyMap()
+        else Weapons.selectAll().where { Weapons.weaponId inList weaponIds }
+            .associate { it[Weapons.weaponId] to Weapon(it[Weapons.weaponId], it[Weapons.name], it[Weapons.image]) }
+
+    private fun loadRarities(rarityIds: List<String>): Map<String, Rarity> =
+        if (rarityIds.isEmpty()) emptyMap()
+        else Rarities.selectAll().where { Rarities.rarityId inList rarityIds }
+            .associate { it[Rarities.rarityId] to Rarity(it[Rarities.rarityId], it[Rarities.name], it[Rarities.colorHex]) }
+
+    /**
+     * Bulk-loads prices from [SkinPricesCurrent] for the given skin IDs, restricted to the
+     * base currency (is_base = true).  Returns a map of skinId → (CSWear → SkinPrice),
+     * keeping the most-recently-updated price per wear when multiple sources are present.
+     */
+    private fun loadPricesBySkin(skinIds: List<String>): Map<String, MutableMap<CSWear, SkinPrice>> {
+        if (skinIds.isEmpty()) return emptyMap()
+        return SkinPricesCurrent
+            .join(Currencies, JoinType.INNER, SkinPricesCurrent.currencyId, Currencies.id)
+            .selectAll()
+            .where { (SkinPricesCurrent.skinId inList skinIds) and (Currencies.isBase eq true) }
+            .orderBy(SkinPricesCurrent.updatedAt to SortOrder.DESC)
+            .mapNotNull { r ->
+                val wear = CSWear.fromId(r[SkinPricesCurrent.wearId]) ?: return@mapNotNull null
+                val skinPrice = SkinPrice(
+                    r[SkinPricesCurrent.skinId],
+                    WearCondition(r[SkinPricesCurrent.wearId], ""),
+                    r[SkinPricesCurrent.sourceId],
+                    r[SkinPricesCurrent.currencyId],
+                    r[SkinPricesCurrent.price],
+                    r[SkinPricesCurrent.quantity]
+                )
+                r[SkinPricesCurrent.skinId] to (wear to skinPrice)
+            }
+            .groupBy({ it.first }, { it.second })
+            .mapValues { entry ->
+                entry.value.distinctBy { it.first }
+                    .associate { it.first to it.second }
+                    .toMutableMap()
+            }
+    }
 
     private fun rowToSkinWithDetails(row: ResultRow): SkinWithDetails {
-        val skin = rowToSkin(row)
+        val wid = row[Skins.weaponId]!!
+        val rid = row[Skins.rarityId]!!
 
         val collection = row.getOrNull(Collections.collectionId)?.let {
             Collection(
@@ -279,21 +296,14 @@ class SkinRepository : SkinRepositoryInterface {
         }
 
         val weapon = row.getOrNull(Weapons.weaponId)?.let {
-            Weapon(
-                weaponId = row[Weapons.weaponId],
-                name = row[Weapons.name],
-                image = row[Weapons.image]
-            )
-        }
+            Weapon(weaponId = row[Weapons.weaponId], name = row[Weapons.name], image = row[Weapons.image])
+        } ?: Weapon(weaponId = wid, name = "", image = null)
 
         val rarity = row.getOrNull(Rarities.rarityId)?.let {
-            Rarity(
-                rarityId = row[Rarities.rarityId],
-                name = row[Rarities.name],
-                colorHex = row[Rarities.colorHex]
-            )
-        }
+            Rarity(rarityId = row[Rarities.rarityId], name = row[Rarities.name], colorHex = row[Rarities.colorHex])
+        } ?: Rarity(rarityId = rid, name = "", colorHex = null)
 
+        val skin = rowToSkin(row, mapOf(wid to weapon), mapOf(rid to rarity))
         return SkinWithDetails(skin, collection, weapon, rarity)
     }
 }

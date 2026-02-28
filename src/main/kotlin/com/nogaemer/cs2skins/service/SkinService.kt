@@ -1,10 +1,14 @@
 package com.nogaemer.cs2skins.service
 
-import com.nogaemer.cs2skins.dto.*
-import database.*
+import com.nogaemer.cs2skins.dto.PriceInfo
+import com.nogaemer.cs2skins.dto.SkinFilterRequest
+import com.nogaemer.cs2skins.dto.SkinPriceHistoryResponse
+import com.nogaemer.cs2skins.dto.SkinResponse
+import database.SkinDTO
+import database.SkinPriceRepository
+import database.SkinRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import models.CSWear
 import org.springframework.stereotype.Service
 import java.math.BigDecimal
 import java.time.Instant
@@ -108,6 +112,7 @@ class SkinService(
     }
 
     private fun mapToSkinResponse(skin: SkinDTO): SkinResponse {
+
         return SkinResponse(
             skinId = skin.skinId,
             name = skin.name,

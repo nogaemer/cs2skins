@@ -3,5 +3,10 @@
   <component name="DataSourcePerFileMappings">
     <file url="file://$APPLICATION_CONFIG_DIR$/consoles/db/1039486e-81fc-485d-b455-3ae7a66f774e/console.sql" value="1039486e-81fc-485d-b455-3ae7a66f774e" />
     <file url="file://$APPLICATION_CONFIG_DIR$/consoles/db/1039486e-81fc-485d-b455-3ae7a66f774e/console_1.sql" value="1039486e-81fc-485d-b455-3ae7a66f774e" />
+    <file url="file://$PROJECT_DIR$/migrations/001_timescaledb_init.sql" value="1039486e-81fc-485d-b455-3ae7a66f774e" />
+    <file url="file://$PROJECT_DIR$/migrations/002_dev_rebuild.sql" value="1039486e-81fc-485d-b455-3ae7a66f774e" />
+    <file url="file://$PROJECT_DIR$/migrations/003_compression_retention.sql" value="1039486e-81fc-485d-b455-3ae7a66f774e" />
+    <file url="file://$PROJECT_DIR$/migrations/004_add_price_sources_currencies.sql" value="1039486e-81fc-485d-b455-3ae7a66f774e" />
+    <file url="file://$PROJECT_DIR$/src/main/kotlin/com/nogaemer/cs2skins/service/TradeUpService.kt" value="1039486e-81fc-485d-b455-3ae7a66f774e" />
   </component>
 </project>
