@@ -144,7 +144,7 @@ BEGIN
         SELECT format('%I.%I', chunk_schema, chunk_name) AS full_name
         FROM   timescaledb_information.chunks
         WHERE  hypertable_name = 'skin_price_history'
-          AND  range_end        < NOW() - INTERVAL '2 years'
+          AND  range_start      < NOW() - INTERVAL '2 years'
           AND  is_compressed    = TRUE
     LOOP
         PERFORM decompress_chunk(_chunk.full_name::regclass);
