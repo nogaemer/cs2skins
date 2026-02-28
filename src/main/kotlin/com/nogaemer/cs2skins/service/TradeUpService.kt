@@ -22,6 +22,9 @@ import tradeup.TradeUpOptimizer
 import java.io.StringReader
 import java.math.BigDecimal
 import java.sql.Connection
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.measureTimedValue
 
@@ -550,7 +553,7 @@ class TradeUpService(
      */
     private data class MasterPriceResult(
         val masterId: Int,
-        val now: Long,
+        val now: OffsetDateTime,
         val roiValue: Double,
         val profitValue: Double,
         val inputCostValue: Double,
@@ -607,7 +610,7 @@ class TradeUpService(
             skinB = skinB
         ) ?: return null
 
-        val now = System.currentTimeMillis()
+        val now = OffsetDateTime.now(ZoneOffset.UTC)
         return MasterPriceResult(
             masterId = masterId,
             now = now,
@@ -650,7 +653,7 @@ class TradeUpService(
         }
         val snapshotsCsv = buildString {
             for (r in results) {
-                append("${r.masterId}\t${r.now}\t${r.roiValue}\t${r.profitValue}\t${r.inputCostValue}\t${r.outputCostValue}\n")
+                append("${r.masterId}\t${DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(r.now)}\t${r.roiValue}\t${r.profitValue}\t${r.inputCostValue}\t${r.outputCostValue}\n")
             }
         }
 
@@ -705,7 +708,7 @@ class TradeUpService(
                         stmt.setDouble(3, r.profitValue)
                         stmt.setDouble(4, r.inputCostValue)
                         stmt.setDouble(5, r.outputCostValue)
-                        stmt.setLong(6, r.now)
+                        stmt.setLong(6, r.now.toInstant().toEpochMilli())
                         stmt.addBatch()
                     }
                     stmt.executeBatch()
@@ -917,15 +920,20 @@ class TradeUpService(
         toMs: Long,
         bucketMs: Long = 86_400_000L
     ): List<TradeUpHistoryPoint> = dbQuery {
+        val fromTs = OffsetDateTime.ofInstant(java.time.Instant.ofEpochMilli(fromMs), ZoneOffset.UTC)
+        val toTs = OffsetDateTime.ofInstant(java.time.Instant.ofEpochMilli(toMs), ZoneOffset.UTC)
         TradeupSnapshots.selectAll()
             .where {
                 (TradeupSnapshots.tradeupId eq tradeupId) and
-                        (TradeupSnapshots.snapshotTime greaterEq fromMs) and
-                        (TradeupSnapshots.snapshotTime lessEq toMs)
+                        (TradeupSnapshots.snapshotTime greaterEq fromTs) and
+                        (TradeupSnapshots.snapshotTime lessEq toTs)
             }
             .orderBy(TradeupSnapshots.snapshotTime to SortOrder.ASC)
             .toList()
-            .groupBy { row -> (row[TradeupSnapshots.snapshotTime] / bucketMs) * bucketMs }
+            .groupBy { row ->
+                val epochMs = row[TradeupSnapshots.snapshotTime].toInstant().toEpochMilli()
+                (epochMs / bucketMs) * bucketMs
+            }
             .map { (bucketStart, rows) ->
                 TradeUpHistoryPoint(
                     bucketStart = bucketStart,

@@ -7,6 +7,9 @@ import kotlinx.coroutines.withContext
 import models.CSWear
 import org.springframework.stereotype.Service
 import java.math.BigDecimal
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
 
 @Service
 class SkinService(
@@ -81,12 +84,14 @@ class SkinService(
         fromMs: Long? = null,
         toMs: Long? = null
     ): List<SkinPriceHistoryResponse> = withContext(Dispatchers.IO) {
-        skinPriceRepository.findHistory(skinId, wearId, fromMs, toMs)
+        val from = fromMs?.let { OffsetDateTime.ofInstant(Instant.ofEpochMilli(it), ZoneOffset.UTC) }
+        val to = toMs?.let { OffsetDateTime.ofInstant(Instant.ofEpochMilli(it), ZoneOffset.UTC) }
+        skinPriceRepository.findHistory(skinId, wearId, from, to)
             .map { point ->
                 SkinPriceHistoryResponse(
                     skinId = point.skinId,
                     wearId = point.wearId,
-                    recordedAt = point.recordedAt,
+                    recordedAt = point.recordedAt.toInstant().toEpochMilli(),
                     price = point.price,
                     quantity = point.quantity
                 )
