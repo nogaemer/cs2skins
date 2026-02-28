@@ -6,6 +6,7 @@ import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.javatime.timestampWithTimeZone
 import java.math.BigDecimal
 import java.time.OffsetDateTime
+import java.time.ZoneOffset
 
 object Collections : Table("collections") {
     val collectionId = varchar("collection_id", 255)
@@ -387,5 +388,20 @@ data class SkinWithDetails(
 data class PriceWithWear(
     val skinPrice: SkinPrice,
     val wearConditionName: String
+)
+
+/**
+ * Parameters for querying price history (raw or bucketed).
+ * [from] and [to] default to the last 7 days when not specified by the caller.
+ */
+data class PriceHistoryParams(
+    val skinId: String,
+    val wearId: String? = null,
+    val source: String? = null,
+    val currency: String? = null,
+    val from: OffsetDateTime = OffsetDateTime.now(ZoneOffset.UTC).minusDays(7),
+    val to: OffsetDateTime = OffsetDateTime.now(ZoneOffset.UTC),
+    val limit: Int = 100,
+    val offset: Int = 0
 )
 

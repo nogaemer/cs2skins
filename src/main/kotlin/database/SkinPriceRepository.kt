@@ -1,8 +1,14 @@
 package database
 
+import com.nogaemer.cs2skins.dto.BucketedPriceResponse
+import com.nogaemer.cs2skins.dto.LatestPriceResponse
+import com.nogaemer.cs2skins.dto.RawPriceHistoryResponse
 import kotlinx.coroutines.Dispatchers
 import org.jetbrains.exposed.sql.*
+import org.jetbrains.exposed.sql.javatime.JavaOffsetDateTimeColumnType
+import org.jetbrains.exposed.sql.statements.StatementType
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
+import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 
@@ -262,6 +268,139 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
         to: OffsetDateTime?
     ): List<SkinPriceHistoryDTO> = findHistory(skinId, wearId, sourceId, currencyId, from, to)
 
+    /**
+     * Returns latest prices from skin_prices_current for the given skin, optionally filtered
+     * by source name and currency code.  Results are ordered by updatedAt descending.
+     */
+    override suspend fun getLatestPrices(
+        skinId: String,
+        source: String?,
+        currency: String?
+    ): List<LatestPriceResponse> = dbQuery {
+        var query = SkinPricesCurrent
+            .join(PriceSources, JoinType.INNER, SkinPricesCurrent.sourceId, PriceSources.id)
+            .join(Currencies, JoinType.INNER, SkinPricesCurrent.currencyId, Currencies.id)
+            .selectAll()
+            .where { SkinPricesCurrent.skinId eq skinId }
+        source?.let { query = query.andWhere { PriceSources.name eq it } }
+        currency?.let { query = query.andWhere { Currencies.code eq it } }
+        query.orderBy(SkinPricesCurrent.updatedAt to SortOrder.DESC).map { row ->
+            LatestPriceResponse(
+                skinId = row[SkinPricesCurrent.skinId],
+                wearId = row[SkinPricesCurrent.wearId],
+                sourceId = row[SkinPricesCurrent.sourceId],
+                sourceName = row[PriceSources.name],
+                currencyId = row[SkinPricesCurrent.currencyId],
+                currencyCode = row[Currencies.code],
+                price = row[SkinPricesCurrent.price],
+                quantity = row[SkinPricesCurrent.quantity],
+                updatedAt = Instant.ofEpochMilli(row[SkinPricesCurrent.updatedAt]).atOffset(ZoneOffset.UTC)
+            )
+        }
+    }
+
+    /**
+     * Returns raw price history records ordered by recordedAt DESC, with optional filters
+     * for wear, source name, currency code, and time range.  Supports limit/offset pagination.
+     */
+    override suspend fun getRawPriceHistory(params: PriceHistoryParams): List<RawPriceHistoryResponse> = dbQuery {
+        var query = SkinPriceHistory
+            .join(PriceSources, JoinType.INNER, SkinPriceHistory.sourceId, PriceSources.id)
+            .join(Currencies, JoinType.INNER, SkinPriceHistory.currencyId, Currencies.id)
+            .selectAll()
+            .where {
+                (SkinPriceHistory.skinId eq params.skinId) and
+                (SkinPriceHistory.recordedAt greaterEq params.from) and
+                (SkinPriceHistory.recordedAt lessEq params.to)
+            }
+        params.wearId?.let { query = query.andWhere { SkinPriceHistory.wearId eq it } }
+        params.source?.let { query = query.andWhere { PriceSources.name eq it } }
+        params.currency?.let { query = query.andWhere { Currencies.code eq it } }
+        query.orderBy(SkinPriceHistory.recordedAt to SortOrder.DESC)
+            .limit(params.limit)
+            .offset(params.offset.toLong())
+            .map { row ->
+                RawPriceHistoryResponse(
+                    skinId = row[SkinPriceHistory.skinId],
+                    wearId = row[SkinPriceHistory.wearId],
+                    sourceId = row[SkinPriceHistory.sourceId],
+                    sourceName = row[PriceSources.name],
+                    currencyId = row[SkinPriceHistory.currencyId],
+                    currencyCode = row[Currencies.code],
+                    price = row[SkinPriceHistory.price],
+                    quantity = row[SkinPriceHistory.quantity],
+                    recordedAt = row[SkinPriceHistory.recordedAt]
+                )
+            }
+    }
+
+    /**
+     * Returns price history aggregated into time buckets using TimescaleDB's time_bucket().
+     * The [bucket] string must be pre-validated by the caller against the allowed list
+     * (e.g. "1h", "6h", "1d", "7d", "30d") before being passed here.
+     */
+    override suspend fun getBucketedPriceHistory(
+        params: PriceHistoryParams,
+        bucket: String
+    ): List<BucketedPriceResponse> = newSuspendedTransaction(Dispatchers.IO) {
+        // Bucket is passed as a bound parameter cast to INTERVAL to avoid any interpolation.
+        val conditions = StringBuilder("sph.skin_id = ? AND sph.recorded_at BETWEEN ? AND ?")
+        val args = mutableListOf<Pair<IColumnType<*>, Any?>>(
+            VarCharColumnType() to bucket,
+            VarCharColumnType() to params.skinId,
+            JavaOffsetDateTimeColumnType() to params.from,
+            JavaOffsetDateTimeColumnType() to params.to
+        )
+        params.wearId?.let {
+            conditions.append(" AND sph.wear_id = ?")
+            args.add(VarCharColumnType() to it)
+        }
+        params.source?.let {
+            conditions.append(" AND ps.name = ?")
+            args.add(VarCharColumnType() to it)
+        }
+        params.currency?.let {
+            conditions.append(" AND c.code = ?")
+            args.add(VarCharColumnType() to it)
+        }
+        val sql = """
+            SELECT time_bucket(?::interval, sph.recorded_at) AS bucket,
+                   sph.wear_id,
+                   sph.source_id,
+                   ps.name  AS source_name,
+                   sph.currency_id,
+                   c.code   AS currency_code,
+                   AVG(sph.price) AS avg_price,
+                   MIN(sph.price) AS min_price,
+                   MAX(sph.price) AS max_price
+            FROM   skin_price_history sph
+            JOIN   price_sources ps ON sph.source_id  = ps.id
+            JOIN   currencies    c  ON sph.currency_id = c.id
+            WHERE  $conditions
+            GROUP  BY 1, sph.wear_id, sph.source_id, ps.name, sph.currency_id, c.code
+            ORDER  BY 1 DESC
+        """.trimIndent()
+        exec(sql, args, explicitStatementType = StatementType.SELECT) { rs ->
+            val results = mutableListOf<BucketedPriceResponse>()
+            while (rs.next()) {
+                results.add(
+                    BucketedPriceResponse(
+                        bucket       = rs.getObject("bucket", OffsetDateTime::class.java),
+                        wearId       = rs.getString("wear_id"),
+                        sourceId     = rs.getInt("source_id"),
+                        sourceName   = rs.getString("source_name"),
+                        currencyId   = rs.getInt("currency_id"),
+                        currencyCode = rs.getString("currency_code"),
+                        avgPrice     = rs.getBigDecimal("avg_price"),
+                        minPrice     = rs.getBigDecimal("min_price"),
+                        maxPrice     = rs.getBigDecimal("max_price")
+                    )
+                )
+            }
+            results
+        } ?: emptyList()
+    }
+
     override suspend fun update(skinPrice: SkinPrice): Boolean = dbQuery {
         val wearId = ensureWearExists(skinPrice.wear)
         val now = OffsetDateTime.now(ZoneOffset.UTC)
@@ -374,6 +513,9 @@ interface SkinPriceRepositoryInterface {
         from: OffsetDateTime? = null,
         to: OffsetDateTime? = null
     ): List<SkinPriceHistoryDTO>
+    suspend fun getLatestPrices(skinId: String, source: String? = null, currency: String? = null): List<LatestPriceResponse>
+    suspend fun getRawPriceHistory(params: PriceHistoryParams): List<RawPriceHistoryResponse>
+    suspend fun getBucketedPriceHistory(params: PriceHistoryParams, bucket: String): List<BucketedPriceResponse>
     suspend fun update(skinPrice: SkinPrice): Boolean
     suspend fun deleteAll(): Boolean
 }

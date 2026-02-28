@@ -1,6 +1,7 @@
 package com.nogaemer.cs2skins.dto
 
 import java.math.BigDecimal
+import java.time.OffsetDateTime
 
 // Response DTOs for API
 data class SkinResponse(
@@ -143,4 +144,43 @@ data class SkinPriceHistoryResponse(
     val recordedAt: Long,
     val price: java.math.BigDecimal,
     val quantity: Int
+)
+
+/** Response item for GET /api/prices/skins/{skinId}/latest */
+data class LatestPriceResponse(
+    val skinId: String,
+    val wearId: String,
+    val sourceId: Int,
+    val sourceName: String,
+    val currencyId: Int,
+    val currencyCode: String,
+    val price: BigDecimal,
+    val quantity: Int,
+    val updatedAt: OffsetDateTime
+)
+
+/** Response item for GET /api/prices/skins/{skinId}/history (raw time-series) */
+data class RawPriceHistoryResponse(
+    val skinId: String,
+    val wearId: String,
+    val sourceId: Int,
+    val sourceName: String,
+    val currencyId: Int,
+    val currencyCode: String,
+    val price: BigDecimal,
+    val quantity: Int,
+    val recordedAt: OffsetDateTime
+)
+
+/** Response item for GET /api/prices/skins/{skinId}/history (bucketed via time_bucket) */
+data class BucketedPriceResponse(
+    val bucket: OffsetDateTime,
+    val wearId: String,
+    val sourceId: Int,
+    val sourceName: String,
+    val currencyId: Int,
+    val currencyCode: String,
+    val avgPrice: BigDecimal,
+    val minPrice: BigDecimal,
+    val maxPrice: BigDecimal
 )
