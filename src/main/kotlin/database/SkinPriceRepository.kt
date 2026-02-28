@@ -3,6 +3,8 @@ package database
 import kotlinx.coroutines.Dispatchers
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
 
 class SkinPriceRepository : SkinPriceRepositoryInterface {
 
@@ -26,7 +28,7 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
      */
     override suspend fun create(skinPrice: SkinPrice): SkinPrice = dbQuery {
         val wearId = ensureWearExists(skinPrice.wear)
-        val now = System.currentTimeMillis()
+        val now = OffsetDateTime.now(ZoneOffset.UTC)
 
         // Atomic upsert: INSERT … ON CONFLICT (skin_id, wear_id) DO UPDATE SET …
         SkinPricesCurrent.upsert {
@@ -34,7 +36,7 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
             it[SkinPricesCurrent.wearId] = wearId
             it[SkinPricesCurrent.price] = skinPrice.price
             it[SkinPricesCurrent.quantity] = skinPrice.quantity
-            it[SkinPricesCurrent.updatedAt] = now
+            it[SkinPricesCurrent.updatedAt] = System.currentTimeMillis()
         }
 
         // Always append a history snapshot
@@ -51,7 +53,7 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
 
     override suspend fun createAll(skinPrices: List<SkinPrice>) = dbQuery {
         if (skinPrices.isEmpty()) return@dbQuery
-        val now = System.currentTimeMillis()
+        val now = OffsetDateTime.now(ZoneOffset.UTC)
 
         // Batch-ensure all unique wear conditions exist in one go
         val uniqueWears = skinPrices.map { it.wear }.distinctBy { it.wearId }
@@ -66,7 +68,7 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
             this[SkinPricesCurrent.wearId] = skinPrice.wear.wearId
             this[SkinPricesCurrent.price] = skinPrice.price
             this[SkinPricesCurrent.quantity] = skinPrice.quantity
-            this[SkinPricesCurrent.updatedAt] = now
+            this[SkinPricesCurrent.updatedAt] = System.currentTimeMillis()
         }
 
         // Bulk insert history snapshots
@@ -116,20 +118,20 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
      *
      * @param skinId   the skin identifier
      * @param wearId   the wear condition identifier
-     * @param fromMs   start of time range (epoch milliseconds, inclusive), or null for all history
-     * @param toMs     end of time range (epoch milliseconds, inclusive), or null for all history
+     * @param from     start of time range (inclusive), or null for all history
+     * @param to       end of time range (inclusive), or null for all history
      */
     override suspend fun findHistory(
         skinId: String,
         wearId: String,
-        fromMs: Long?,
-        toMs: Long?
+        from: OffsetDateTime?,
+        to: OffsetDateTime?
     ): List<SkinPriceHistoryPoint> = dbQuery {
         var query = SkinPriceHistory.selectAll()
             .where { (SkinPriceHistory.skinId eq skinId) and (SkinPriceHistory.wearId eq wearId) }
 
-        fromMs?.let { query = query.andWhere { SkinPriceHistory.recordedAt greaterEq it } }
-        toMs?.let { query = query.andWhere { SkinPriceHistory.recordedAt lessEq it } }
+        from?.let { query = query.andWhere { SkinPriceHistory.recordedAt greaterEq it } }
+        to?.let { query = query.andWhere { SkinPriceHistory.recordedAt lessEq it } }
 
         query.orderBy(SkinPriceHistory.recordedAt to SortOrder.ASC).map { row ->
             SkinPriceHistoryPoint(
@@ -144,14 +146,14 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
 
     override suspend fun update(skinPrice: SkinPrice): Boolean = dbQuery {
         val wearId = ensureWearExists(skinPrice.wear)
-        val now = System.currentTimeMillis()
+        val now = OffsetDateTime.now(ZoneOffset.UTC)
 
         val updated = SkinPricesCurrent.update({
             (SkinPricesCurrent.skinId eq skinPrice.skinId) and (SkinPricesCurrent.wearId eq wearId)
         }) {
             it[SkinPricesCurrent.price] = skinPrice.price
             it[SkinPricesCurrent.quantity] = skinPrice.quantity
-            it[SkinPricesCurrent.updatedAt] = now
+            it[SkinPricesCurrent.updatedAt] = System.currentTimeMillis()
         } > 0
 
         if (updated) {
@@ -198,7 +200,7 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
 data class SkinPriceHistoryPoint(
     val skinId: String,
     val wearId: String,
-    val recordedAt: Long,
+    val recordedAt: OffsetDateTime,
     val price: java.math.BigDecimal,
     val quantity: Int
 )
@@ -209,7 +211,7 @@ interface SkinPriceRepositoryInterface {
     suspend fun findBySkin(skinId: String): List<SkinPrice>
     suspend fun findBySkinAndWear(skinId: String, wearId: String): SkinPrice?
     suspend fun findWithWearCondition(skinId: String): List<PriceWithWear>
-    suspend fun findHistory(skinId: String, wearId: String, fromMs: Long? = null, toMs: Long? = null): List<SkinPriceHistoryPoint>
+    suspend fun findHistory(skinId: String, wearId: String, from: OffsetDateTime? = null, to: OffsetDateTime? = null): List<SkinPriceHistoryPoint>
     suspend fun update(skinPrice: SkinPrice): Boolean
     suspend fun deleteAll(): Boolean
 }
