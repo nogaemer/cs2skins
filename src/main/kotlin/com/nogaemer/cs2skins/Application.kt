@@ -25,13 +25,6 @@ class SkinDatabaseInitializer {
 
     private val logger = LoggerFactory.getLogger(SkinDatabaseInitializer::class.java)
 
-    companion object {
-        /** One week expressed in epoch-milliseconds; used as the TimescaleDB chunk interval. */
-        private const val WEEK_IN_MS = 604_800_000L
-        /** One year expressed in epoch-milliseconds; used as the retention period. */
-        private const val YEAR_IN_MS = 31_536_000_000L
-    }
-
     @EventListener(ApplicationReadyEvent::class)
     fun initializeTables() {
         transaction {
@@ -70,41 +63,26 @@ class SkinDatabaseInitializer {
             // Enable TimescaleDB extension
             exec("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE")
 
-            // SAFETY NOTE: WEEK_IN_MS and YEAR_IN_MS are Kotlin `const val` compile-time Long
-            // literals, not user-supplied input. String interpolation here embeds the numeric
-            // literal directly into the SQL text, which is safe and equivalent to writing the
-            // integer constant inline. Do NOT replace these with variables that could hold
-            // user-controlled values.
-
-            // Convert skin_price_history to a hypertable partitioned by recorded_at
-            // chunk_time_interval = 604800000 ms (1 week in epoch-milliseconds)
+            // Convert skin_price_history to a hypertable partitioned by recorded_at (timestamptz).
+            // chunk_time_interval = 7 days.  if_not_exists prevents errors on re-runs.
             exec(
                 """SELECT create_hypertable(
                     'skin_price_history',
                     'recorded_at',
                     if_not_exists => TRUE,
-                    chunk_time_interval => $WEEK_IN_MS
+                    chunk_time_interval => INTERVAL '7 days'
                 )"""
             )
 
-            // Convert tradeup_snapshots to a hypertable partitioned by snapshot_time
+            // Convert tradeup_snapshots to a hypertable partitioned by snapshot_time (timestamptz).
             exec(
                 """SELECT create_hypertable(
                     'tradeup_snapshots',
                     'snapshot_time',
                     if_not_exists => TRUE,
-                    chunk_time_interval => $WEEK_IN_MS
+                    chunk_time_interval => INTERVAL '7 days'
                 )"""
             )
-
-            // Register an integer_now function (epoch-ms) for hypertables with integer time dim.
-            // TimescaleDB requires this before compression/retention policies can use integer durations.
-            exec(
-                """CREATE OR REPLACE FUNCTION now_ms() RETURNS BIGINT
-                   LANGUAGE SQL STABLE AS ${'$'}${'$'} SELECT (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT ${'$'}${'$'}"""
-            )
-            exec("SELECT set_integer_now_func('skin_price_history', 'now_ms', replace_if_exists => TRUE)")
-            exec("SELECT set_integer_now_func('tradeup_snapshots', 'now_ms', replace_if_exists => TRUE)")
 
             // Enable compression on skin_price_history (compress chunks older than 7 days)
             exec(
@@ -115,7 +93,7 @@ class SkinDatabaseInitializer {
             exec(
                 """SELECT add_compression_policy(
                     'skin_price_history',
-                    ${WEEK_IN_MS}::BIGINT,
+                    INTERVAL '7 days',
                     if_not_exists => TRUE
                 )"""
             )
@@ -129,7 +107,7 @@ class SkinDatabaseInitializer {
             exec(
                 """SELECT add_compression_policy(
                     'tradeup_snapshots',
-                    ${WEEK_IN_MS}::BIGINT,
+                    INTERVAL '7 days',
                     if_not_exists => TRUE
                 )"""
             )
@@ -138,12 +116,25 @@ class SkinDatabaseInitializer {
             exec(
                 """SELECT add_retention_policy(
                     'skin_price_history',
-                    ${YEAR_IN_MS}::BIGINT,
+                    INTERVAL '1 year',
                     if_not_exists => TRUE
                 )"""
             )
 
-            logger.info("TimescaleDB hypertables, compression and retention policies configured successfully")
+            // Smoke test: verify both hypertables are registered in the catalog.
+            val confirmed = mutableListOf<String>()
+            exec(
+                """SELECT hypertable_name
+                   FROM   timescaledb_information.hypertables
+                   WHERE  hypertable_name IN ('skin_price_history', 'tradeup_snapshots')
+                   ORDER  BY hypertable_name"""
+            ) { rs ->
+                while (rs.next()) confirmed.add(rs.getString("hypertable_name"))
+            }
+            check(confirmed.size == 2) {
+                "TimescaleDB hypertables not fully initialized – found: $confirmed"
+            }
+            logger.info("TimescaleDB hypertables confirmed: $confirmed")
         } catch (e: Exception) {
             logger.warn("TimescaleDB setup skipped (extension may not be available): ${e.message}")
         }

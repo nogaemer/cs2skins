@@ -3,6 +3,7 @@ package database
 import models.CSWear
 import org.jetbrains.exposed.sql.ReferenceOption
 import org.jetbrains.exposed.sql.Table
+import org.jetbrains.exposed.sql.javatime.timestampWithTimeZone
 import java.math.BigDecimal
 
 object Collections : Table("collections") {
@@ -87,9 +88,9 @@ object SkinPricesCurrent : Table("skin_prices_current") {
 /**
  * Historical price records per skin+wear (TimescaleDB hypertable on recorded_at).
  * Partitioned by week; stores one row per price snapshot event.
- * The recorded_at column holds epoch-milliseconds (BIGINT).
+ * The recorded_at column holds a timestamptz value.
  * A surrogate `seq` auto-increment is included in the primary key to guarantee
- * uniqueness even when multiple snapshots are written within the same millisecond.
+ * uniqueness even when multiple snapshots are written within the same instant.
  */
 object SkinPriceHistory : Table("skin_price_history") {
     val seq = integer("seq").autoIncrement()
@@ -97,7 +98,7 @@ object SkinPriceHistory : Table("skin_price_history") {
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val wearId = varchar("wear_id", 255)
         .references(WearConditions.wearId, onDelete = ReferenceOption.RESTRICT, onUpdate = ReferenceOption.CASCADE)
-    val recordedAt = long("recorded_at")
+    val recordedAt = timestampWithTimeZone("recorded_at")
     val price = decimal("price", 10, 2).default(java.math.BigDecimal.ZERO)
     val quantity = integer("quantity").default(0)
 
@@ -207,15 +208,15 @@ object TradeupsCurrent : Table("tradeups_current") {
 
 /**
  * Time-series snapshots of trade-up metrics (TimescaleDB hypertable on snapshot_time).
- * One row per calculation event. Partitioned by week (chunk_time_interval = 604800000 ms).
+ * One row per calculation event. Partitioned by week (chunk_time_interval = 7 days).
  * A surrogate `snapshotSeq` auto-increment is included in the primary key to guarantee
- * uniqueness even when multiple snapshots are written within the same millisecond.
+ * uniqueness even when multiple snapshots are written within the same instant.
  */
 object TradeupSnapshots : Table("tradeup_snapshots") {
     val snapshotSeq = integer("snapshot_seq").autoIncrement()
     val tradeupId = integer("tradeup_id")
         .references(TradeupsMaster.id, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
-    val snapshotTime = long("snapshot_time")
+    val snapshotTime = timestampWithTimeZone("snapshot_time")
     val roi = double("roi")
     val profit = double("profit")
     val inputCost = double("input_cost")
