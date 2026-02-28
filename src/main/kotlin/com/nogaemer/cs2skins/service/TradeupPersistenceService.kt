@@ -46,16 +46,17 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
                 stmt.executeUpdate()
             }
 
-            // 2. Idempotency check: fetch the most-recent snapshot and compare in application
-            //    code so we avoid relying on database floating-point equality semantics.
+            // 2. Idempotency check: fetch the most-recent snapshot and compare via BigDecimal
+            //    to avoid bit-level Double equality issues caused by JDBC wire-protocol
+            //    round-trips or future column-type changes.
             val alreadyRecorded = conn.prepareStatement(LATEST_SNAPSHOT_SQL).use { stmt ->
                 stmt.setInt(1, tradeupId)
                 stmt.executeQuery().use { rs ->
                     rs.next() &&
-                        rs.getDouble("roi") == roi &&
-                        rs.getDouble("profit") == profit &&
-                        rs.getDouble("input_cost") == inputCost &&
-                        rs.getDouble("output_cost") == outputCost
+                        approximatelyEqual(rs.getDouble("roi"), roi) &&
+                        approximatelyEqual(rs.getDouble("profit"), profit) &&
+                        approximatelyEqual(rs.getDouble("input_cost"), inputCost) &&
+                        approximatelyEqual(rs.getDouble("output_cost"), outputCost)
                 }
             }
 
@@ -110,5 +111,11 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
             INSERT INTO tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost)
             VALUES (?, ?, ?, ?, ?, ?)
         """.trimIndent()
+
+        /** Tolerance for idempotency comparisons (1e-9 ≈ sub-cent on dollar-scale figures). */
+        private const val EPSILON = 1e-9
+
+        /** Returns true when [a] and [b] differ by less than [EPSILON]. */
+        private fun approximatelyEqual(a: Double, b: Double) = kotlin.math.abs(a - b) < EPSILON
     }
 }
