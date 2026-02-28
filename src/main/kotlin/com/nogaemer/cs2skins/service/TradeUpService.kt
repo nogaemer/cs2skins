@@ -618,7 +618,7 @@ class TradeUpService(
 
         val now = OffsetDateTime.now(ZoneOffset.UTC)
         val riskMetrics = computeRiskMetrics(
-            tradeUp.outcomeValues,
+            tradeUp,
             tradeUp.inputCostWithDropChange.let { if (it.isFinite()) it else 0.0 }
         )
         return MasterPriceResult(
@@ -980,30 +980,34 @@ class TradeUpService(
     ): TradeUpRiskSummaryResponse = dbQuery {
         val fromTs = OffsetDateTime.ofInstant(java.time.Instant.ofEpochMilli(fromMs), ZoneOffset.UTC)
         val toTs = OffsetDateTime.ofInstant(java.time.Instant.ofEpochMilli(toMs), ZoneOffset.UTC)
-        val rows = TradeupSnapshots.selectAll()
+
+        val countExpr = TradeupSnapshots.snapshotSeq.count()
+        val probProfitAvgExpr = TradeupSnapshots.probProfit.avg()
+        val varianceAvgExpr = TradeupSnapshots.variance.avg()
+        val p05MinExpr = TradeupSnapshots.p05.min()
+        val p50AvgExpr = TradeupSnapshots.p50.avg()
+        val p95MaxExpr = TradeupSnapshots.p95.max()
+
+        val aggregateRow = TradeupSnapshots
+            .select(countExpr, probProfitAvgExpr, varianceAvgExpr, p05MinExpr, p50AvgExpr, p95MaxExpr)
             .where {
                 (TradeupSnapshots.tradeupId eq tradeupId) and
                         (TradeupSnapshots.snapshotTime greaterEq fromTs) and
                         (TradeupSnapshots.snapshotTime lessEq toTs)
             }
-            .toList()
+            .singleOrNull()
 
-        val probProfitValues = rows.mapNotNull { it[TradeupSnapshots.probProfit] }
-        val varianceValues = rows.mapNotNull { it[TradeupSnapshots.variance] }
-        val p05Values = rows.mapNotNull { it[TradeupSnapshots.p05] }
-        val p50Values = rows.mapNotNull { it[TradeupSnapshots.p50] }
-        val p95Values = rows.mapNotNull { it[TradeupSnapshots.p95] }
-
+        val snapshotCount = aggregateRow?.get(countExpr)?.toInt() ?: 0
         TradeUpRiskSummaryResponse(
             tradeupId = tradeupId,
             from = fromMs,
             to = toMs,
-            snapshotCount = rows.size,
-            probProfitAvg = probProfitValues.takeIf { it.isNotEmpty() }?.average(),
-            varianceAvg = varianceValues.takeIf { it.isNotEmpty() }?.average(),
-            p05Min = p05Values.takeIf { it.isNotEmpty() }?.min(),
-            p50Avg = p50Values.takeIf { it.isNotEmpty() }?.average(),
-            p95Max = p95Values.takeIf { it.isNotEmpty() }?.max(),
+            snapshotCount = snapshotCount,
+            probProfitAvg = aggregateRow?.get(probProfitAvgExpr)?.toDouble(),
+            varianceAvg = aggregateRow?.get(varianceAvgExpr)?.toDouble(),
+            p05Min = aggregateRow?.get(p05MinExpr),
+            p50Avg = aggregateRow?.get(p50AvgExpr)?.toDouble(),
+            p95Max = aggregateRow?.get(p95MaxExpr),
         )
     }
 
