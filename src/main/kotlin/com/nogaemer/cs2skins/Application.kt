@@ -84,39 +84,55 @@ class SkinDatabaseInitializer {
                 )"""
             )
 
-            // Enable compression on skin_price_history (compress chunks older than 7 days)
+            // Enable compression on skin_price_history (compress chunks older than 7 days).
+            // compress_segmentby groups chunks by skin+wear so per-skin queries skip
+            // unrelated segments; compress_orderby maximises delta-compression efficiency.
             exec(
                 """ALTER TABLE skin_price_history
                    SET (timescaledb.compress,
-                        timescaledb.compress_segmentby = 'skin_id,wear_id')"""
+                        timescaledb.compress_segmentby = 'skin_id, wear_id',
+                        timescaledb.compress_orderby   = 'recorded_at DESC')"""
             )
             exec(
                 """SELECT add_compression_policy(
                     'skin_price_history',
-                    INTERVAL '7 days',
-                    if_not_exists => TRUE
+                    compress_after => INTERVAL '7 days',
+                    if_not_exists  => TRUE
                 )"""
             )
 
-            // Enable compression on tradeup_snapshots (compress chunks older than 7 days)
+            // Enable compression on tradeup_snapshots (compress chunks older than 7 days).
             exec(
                 """ALTER TABLE tradeup_snapshots
                    SET (timescaledb.compress,
-                        timescaledb.compress_segmentby = 'tradeup_id')"""
+                        timescaledb.compress_segmentby = 'tradeup_id',
+                        timescaledb.compress_orderby   = 'snapshot_time DESC')"""
             )
             exec(
                 """SELECT add_compression_policy(
                     'tradeup_snapshots',
-                    INTERVAL '7 days',
+                    compress_after => INTERVAL '7 days',
+                    if_not_exists  => TRUE
+                )"""
+            )
+
+            // Data retention: drop skin price history older than 90 days.
+            // Retention window (90 days) is >= compression window (7 days) as required.
+            // To change: SELECT alter_retention_policy('skin_price_history', drop_after => INTERVAL 'X days');
+            exec(
+                """SELECT add_retention_policy(
+                    'skin_price_history',
+                    drop_after    => INTERVAL '90 days',
                     if_not_exists => TRUE
                 )"""
             )
 
-            // Data retention: drop skin price history older than 1 year
+            // Data retention: drop tradeup snapshot history older than 90 days.
+            // To change: SELECT alter_retention_policy('tradeup_snapshots', drop_after => INTERVAL 'X days');
             exec(
                 """SELECT add_retention_policy(
-                    'skin_price_history',
-                    INTERVAL '1 year',
+                    'tradeup_snapshots',
+                    drop_after    => INTERVAL '90 days',
                     if_not_exists => TRUE
                 )"""
             )

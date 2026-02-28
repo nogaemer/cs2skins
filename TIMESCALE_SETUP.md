@@ -51,8 +51,8 @@ On first startup, `SkinDatabaseInitializer` will:
 5. Convert `skin_price_history` and `tradeup_snapshots` to
    **hypertables** partitioned by week.
 6. Configure **compression** (chunks older than 7 days are compressed).
-7. Configure **data retention** for `skin_price_history`
-   (rows older than 1 year are dropped automatically).
+7. Configure **data retention** for both hypertables
+   (chunks older than 90 days are dropped automatically).
 
 If TimescaleDB is not available (e.g., plain PostgreSQL), setup step 4–7
 will be skipped with a warning and the application will continue running
@@ -89,9 +89,58 @@ using regular tables.
 
 ## Time-Series Columns
 
-Both hypertables use `BIGINT` columns storing **epoch milliseconds** as
-the time dimension.  TimescaleDB chunk intervals are set to 1 week
-(`604 800 000` ms).
+Both hypertables use `TIMESTAMPTZ` columns as their time dimension.
+TimescaleDB chunk intervals are set to 1 week (`INTERVAL '7 days'`).
+
+| Table                | Time column    | Type         |
+|----------------------|----------------|--------------|
+| `skin_price_history` | `recorded_at`  | `TIMESTAMPTZ`|
+| `tradeup_snapshots`  | `snapshot_time`| `TIMESTAMPTZ`|
+
+## Compression and Retention Policies
+
+Both hypertables have automatic background policies (applied by
+`SkinDatabaseInitializer` on startup and documented in
+`migrations/003_compression_retention.sql`):
+
+| Table                | Compress after | Retain raw data |
+|----------------------|---------------|-----------------|
+| `skin_price_history` | 7 days        | 90 days         |
+| `tradeup_snapshots`  | 7 days        | 90 days         |
+
+### Compression settings
+
+```
+skin_price_history:
+  compress_segmentby = 'skin_id, wear_id'   -- skip unrelated per-skin segments
+  compress_orderby   = 'recorded_at DESC'   -- optimal delta-compression
+
+tradeup_snapshots:
+  compress_segmentby = 'tradeup_id'         -- skip unrelated per-tradeup segments
+  compress_orderby   = 'snapshot_time DESC'
+```
+
+### Changing policies at runtime
+
+No migration is required — use the TimescaleDB SQL functions directly:
+
+```sql
+-- Change the compression schedule (e.g., compress after 14 days):
+SELECT alter_compression_policy('skin_price_history',  compress_after => INTERVAL '14 days');
+SELECT alter_compression_policy('tradeup_snapshots',   compress_after => INTERVAL '14 days');
+
+-- Change the retention window (e.g., keep 180 days of raw data):
+SELECT alter_retention_policy('skin_price_history',    drop_after => INTERVAL '180 days');
+SELECT alter_retention_policy('tradeup_snapshots',     drop_after => INTERVAL '180 days');
+
+-- Remove a policy entirely:
+SELECT remove_compression_policy('skin_price_history');
+SELECT remove_retention_policy('skin_price_history');
+```
+
+**Constraint:** the retention window must always be ≥ the compression
+window, otherwise TimescaleDB will refuse to compress chunks before they
+can be dropped.
 
 ## Seeding Data
 
