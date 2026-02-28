@@ -130,7 +130,22 @@ data class TradeUpHistoryPoint(
     val roi: Double,
     val profit: Double,
     val inputCost: Double,
-    val outputCost: Double
+    val outputCost: Double,
+    val probProfit: Double?,
+    val p50: Double?,
+)
+
+/** Risk summary for a trade-up over a given time window. */
+data class TradeUpRiskSummaryResponse(
+    val tradeupId: Int,
+    val from: Long,
+    val to: Long,
+    val snapshotCount: Int,
+    val probProfitAvg: Double?,
+    val varianceAvg: Double?,
+    val p05Min: Double?,
+    val p50Avg: Double?,
+    val p95Max: Double?,
 )
 
 /** A single time-bucketed point in a skin price history series. */
