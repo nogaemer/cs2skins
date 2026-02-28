@@ -130,7 +130,57 @@ data class TradeUpHistoryPoint(
     val roi: Double,
     val profit: Double,
     val inputCost: Double,
-    val outputCost: Double
+    val outputCost: Double,
+    /** Number of raw snapshots aggregated into this bucket. */
+    val samples: Int = 1
+)
+
+/**
+ * Aggregated risk summary for a trade-up over a given time window.
+ * Risk columns ([probProfit], [variance], [p05], [p50], [p95]) are null
+ * when no snapshot in the window carries risk-metric data yet.
+ */
+data class TradeUpRiskResponse(
+    val tradeupId: Int,
+    val from: Long,
+    val to: Long,
+    val avgRoi: Double,
+    val samples: Long,
+    /** Fraction of outcome values with profit > 0 (0.0 – 1.0). */
+    val probProfit: Double?,
+    /** Weighted variance of the output-value distribution. */
+    val variance: Double?,
+    /** 5th percentile of the output-value distribution. */
+    val p05: Double?,
+    /** 50th percentile (median) of the output-value distribution. */
+    val p50: Double?,
+    /** 95th percentile of the output-value distribution. */
+    val p95: Double?
+)
+
+/** A single entry in the ranked top-tradeups response. */
+data class TopTradeupEntry(
+    val tradeupId: Int,
+    val avgRoi: Double,
+    val avgProfit: Double,
+    val samples: Long,
+    val stattrak: Boolean,
+    val rarityId: String?,
+    val rarityName: String?
+)
+
+/**
+ * Response for GET /api/tradeups/top.
+ * [source] is "aggregate" when the data comes from the `tradeup_daily`
+ * materialized view; "raw" when it falls back to raw snapshots.
+ */
+data class TopTradeupResponse(
+    val tradeups: List<TopTradeupEntry>,
+    val from: Long,
+    val to: Long,
+    val bucket: String,
+    /** "aggregate" when tradeup_daily was used; "raw" otherwise. */
+    val source: String
 )
 
 /** A single time-bucketed point in a skin price history series. */
