@@ -88,5 +88,6 @@ class TradeupPersistenceServiceTest {
 
         verify(conn).rollback()
         verify(conn, never()).commit()
+        verify(conn).setAutoCommit(true)
     }
 }
