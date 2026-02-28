@@ -29,6 +29,7 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
     override suspend fun create(skinPrice: SkinPrice): SkinPrice = dbQuery {
         val wearId = ensureWearExists(skinPrice.wear)
         val now = OffsetDateTime.now(ZoneOffset.UTC)
+        val nowMs = now.toInstant().toEpochMilli()
 
         // Atomic upsert: INSERT … ON CONFLICT (skin_id, wear_id) DO UPDATE SET …
         SkinPricesCurrent.upsert {
@@ -36,7 +37,7 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
             it[SkinPricesCurrent.wearId] = wearId
             it[SkinPricesCurrent.price] = skinPrice.price
             it[SkinPricesCurrent.quantity] = skinPrice.quantity
-            it[SkinPricesCurrent.updatedAt] = System.currentTimeMillis()
+            it[SkinPricesCurrent.updatedAt] = nowMs
         }
 
         // Always append a history snapshot
@@ -54,6 +55,7 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
     override suspend fun createAll(skinPrices: List<SkinPrice>) = dbQuery {
         if (skinPrices.isEmpty()) return@dbQuery
         val now = OffsetDateTime.now(ZoneOffset.UTC)
+        val nowMs = now.toInstant().toEpochMilli()
 
         // Batch-ensure all unique wear conditions exist in one go
         val uniqueWears = skinPrices.map { it.wear }.distinctBy { it.wearId }
@@ -68,7 +70,7 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
             this[SkinPricesCurrent.wearId] = skinPrice.wear.wearId
             this[SkinPricesCurrent.price] = skinPrice.price
             this[SkinPricesCurrent.quantity] = skinPrice.quantity
-            this[SkinPricesCurrent.updatedAt] = System.currentTimeMillis()
+            this[SkinPricesCurrent.updatedAt] = nowMs
         }
 
         // Bulk insert history snapshots
@@ -147,13 +149,14 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
     override suspend fun update(skinPrice: SkinPrice): Boolean = dbQuery {
         val wearId = ensureWearExists(skinPrice.wear)
         val now = OffsetDateTime.now(ZoneOffset.UTC)
+        val nowMs = now.toInstant().toEpochMilli()
 
         val updated = SkinPricesCurrent.update({
             (SkinPricesCurrent.skinId eq skinPrice.skinId) and (SkinPricesCurrent.wearId eq wearId)
         }) {
             it[SkinPricesCurrent.price] = skinPrice.price
             it[SkinPricesCurrent.quantity] = skinPrice.quantity
-            it[SkinPricesCurrent.updatedAt] = System.currentTimeMillis()
+            it[SkinPricesCurrent.updatedAt] = nowMs
         } > 0
 
         if (updated) {

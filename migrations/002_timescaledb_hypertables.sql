@@ -10,12 +10,18 @@
 -- a TimescaleDB time-dimension column type).  Existing data is
 -- preserved via to_timestamp(col / 1000.0).
 --
--- Run AFTER migration 001 has been applied.
+-- When to run:
+--   Existing deployments where migration 001 was already applied
+--   (tables exist with BIGINT time columns).
+--   Fresh deployments DO NOT need to run this migration — the
+--   application startup creates tables with timestamptz schema
+--   and registers hypertables automatically.
 -- ============================================================
 
--- ------------------------------------------------------------
+-- ============================================================
 -- skin_price_history
--- ------------------------------------------------------------
+-- ============================================================
+BEGIN;
 
 -- 1. Create replacement table with timestamptz time column.
 CREATE TABLE skin_price_history_new (
@@ -57,6 +63,7 @@ SELECT setval(
     COALESCE((SELECT MAX(seq) FROM skin_price_history), 0),
     TRUE
 );
+
 -- 5. Recreate composite index used by skin+wear range queries.
 CREATE INDEX idx_sph_skin_wear ON skin_price_history (skin_id, wear_id);
 
@@ -71,9 +78,12 @@ SELECT create_hypertable(
     migrate_data        => TRUE
 );
 
--- ------------------------------------------------------------
+COMMIT;
+
+-- ============================================================
 -- tradeup_snapshots
--- ------------------------------------------------------------
+-- ============================================================
+BEGIN;
 
 -- 1. Create replacement table with timestamptz time column.
 CREATE TABLE tradeup_snapshots_new (
@@ -113,6 +123,7 @@ SELECT setval(
     pg_get_serial_sequence('tradeup_snapshots', 'snapshot_seq'),
     COALESCE((SELECT MAX(snapshot_seq) FROM tradeup_snapshots), 0)
 );
+
 -- 5. Recreate index used by time-range queries on the hypertable.
 CREATE INDEX idx_ts_snapshot_time ON tradeup_snapshots (snapshot_time);
 
@@ -124,6 +135,8 @@ SELECT create_hypertable(
     if_not_exists       => TRUE,
     migrate_data        => TRUE
 );
+
+COMMIT;
 
 -- ------------------------------------------------------------
 -- Smoke test: confirm both hypertables are registered.
