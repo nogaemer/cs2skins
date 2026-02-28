@@ -58,7 +58,8 @@ SELECT create_hypertable(
     'tradeup_snapshots',
     'snapshot_time',
     chunk_time_interval => 604800000::BIGINT,
-    if_not_exists       => TRUE
+    if_not_exists       => TRUE,
+    migrate_data        => TRUE
 );
 
 SELECT set_integer_now_func(
