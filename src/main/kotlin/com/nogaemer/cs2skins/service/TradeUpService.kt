@@ -19,6 +19,7 @@ import tradeup.TradeUp
 import tradeup.TradeUpInput
 import tradeup.TradeUpInputComponent
 import tradeup.TradeUpOptimizer
+import tradeup.computeRiskMetrics
 import java.io.StringReader
 import java.math.BigDecimal
 import java.sql.Connection
@@ -567,7 +568,12 @@ class TradeUpService(
         val inputBSkinName: String,
         val inputBAmount: Int,
         val inputBFloat: Double,
-        val inputBPrice: BigDecimal
+        val inputBPrice: BigDecimal,
+        val probProfit: Double,
+        val variance: Double,
+        val p05: Double,
+        val p50: Double,
+        val p95: Double,
     )
 
     /**
@@ -611,6 +617,10 @@ class TradeUpService(
         ) ?: return null
 
         val now = OffsetDateTime.now(ZoneOffset.UTC)
+        val riskMetrics = computeRiskMetrics(
+            tradeUp.outcomeValues,
+            tradeUp.inputCostWithDropChange.let { if (it.isFinite()) it else 0.0 }
+        )
         return MasterPriceResult(
             masterId = masterId,
             now = now,
@@ -627,7 +637,12 @@ class TradeUpService(
             inputBSkinName = tradeUp.input.tradeUpInputComponentB.skin.name,
             inputBAmount = tradeUp.input.tradeUpInputComponentB.amount,
             inputBFloat = tradeUp.input.costsFloatInput?.floatB ?: 0.0,
-            inputBPrice = BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
+            inputBPrice = BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0),
+            probProfit = riskMetrics.probProfit,
+            variance = riskMetrics.variance,
+            p05 = riskMetrics.p05,
+            p50 = riskMetrics.p50,
+            p95 = riskMetrics.p95,
         )
     }
 
@@ -653,7 +668,7 @@ class TradeUpService(
         }
         val snapshotsCsv = buildString {
             for (r in results) {
-                append("${r.masterId}\t${DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(r.now)}\t${r.roiValue}\t${r.profitValue}\t${r.inputCostValue}\t${r.outputCostValue}\n")
+                append("${r.masterId}\t${DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(r.now)}\t${r.roiValue}\t${r.profitValue}\t${r.inputCostValue}\t${r.outputCostValue}\t${r.probProfit}\t${r.variance}\t${r.p05}\t${r.p50}\t${r.p95}\n")
             }
         }
 
@@ -684,7 +699,7 @@ class TradeUpService(
                 // 3. COPY tradeup_snapshots (1 row per master)
                 StringReader(snapshotsCsv).use {
                     copyManager.copyIn(
-                        "COPY tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')",
+                        "COPY tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost, prob_profit, variance, p05, p50, p95) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')",
                         it
                     )
                 }
@@ -942,9 +957,54 @@ class TradeUpService(
                     inputCost = rows.map { it[TradeupSnapshots.inputCost] }.takeIf { it.isNotEmpty() }?.average()
                         ?: 0.0,
                     outputCost = rows.map { it[TradeupSnapshots.outputCost] }.takeIf { it.isNotEmpty() }?.average()
-                        ?: 0.0
+                        ?: 0.0,
+                    probProfit = rows.mapNotNull { it[TradeupSnapshots.probProfit] }
+                        .takeIf { it.isNotEmpty() }?.average(),
+                    p50 = rows.mapNotNull { it[TradeupSnapshots.p50] }
+                        .takeIf { it.isNotEmpty() }?.average(),
                 )
             }
+    }
+
+    /**
+     * Returns aggregated risk metrics for a specific trade-up over a time window.
+     *
+     * @param tradeupId  the trade-up master record id
+     * @param fromMs     start of time range (epoch milliseconds, inclusive)
+     * @param toMs       end of time range (epoch milliseconds, inclusive)
+     */
+    suspend fun getTradeupRiskSummary(
+        tradeupId: Int,
+        fromMs: Long,
+        toMs: Long,
+    ): TradeUpRiskSummaryResponse = dbQuery {
+        val fromTs = OffsetDateTime.ofInstant(java.time.Instant.ofEpochMilli(fromMs), ZoneOffset.UTC)
+        val toTs = OffsetDateTime.ofInstant(java.time.Instant.ofEpochMilli(toMs), ZoneOffset.UTC)
+        val rows = TradeupSnapshots.selectAll()
+            .where {
+                (TradeupSnapshots.tradeupId eq tradeupId) and
+                        (TradeupSnapshots.snapshotTime greaterEq fromTs) and
+                        (TradeupSnapshots.snapshotTime lessEq toTs)
+            }
+            .toList()
+
+        val probProfitValues = rows.mapNotNull { it[TradeupSnapshots.probProfit] }
+        val varianceValues = rows.mapNotNull { it[TradeupSnapshots.variance] }
+        val p05Values = rows.mapNotNull { it[TradeupSnapshots.p05] }
+        val p50Values = rows.mapNotNull { it[TradeupSnapshots.p50] }
+        val p95Values = rows.mapNotNull { it[TradeupSnapshots.p95] }
+
+        TradeUpRiskSummaryResponse(
+            tradeupId = tradeupId,
+            from = fromMs,
+            to = toMs,
+            snapshotCount = rows.size,
+            probProfitAvg = probProfitValues.takeIf { it.isNotEmpty() }?.average(),
+            varianceAvg = varianceValues.takeIf { it.isNotEmpty() }?.average(),
+            p05Min = p05Values.takeIf { it.isNotEmpty() }?.min(),
+            p50Avg = p50Values.takeIf { it.isNotEmpty() }?.average(),
+            p95Max = p95Values.takeIf { it.isNotEmpty() }?.max(),
+        )
     }
 
     /**
