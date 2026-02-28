@@ -2,6 +2,8 @@ package database
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.transactions.transaction
 import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigDecimal
@@ -41,6 +43,18 @@ class SeedDB {
      */
     suspend fun seedSkins() = withContext(Dispatchers.IO) {
         skinRepo.deleteAll()
+
+        // Resolve Steam source ID and USD currency ID once up-front.
+        val steamSourceId = transaction {
+            PriceSources.selectAll().where { PriceSources.name eq "steam" }
+                .firstOrNull()?.get(PriceSources.id)
+                ?: error("price_sources row for 'steam' not found — run migration 004 first")
+        }
+        val usdCurrencyId = transaction {
+            Currencies.selectAll().where { Currencies.code eq "USD" }
+                .firstOrNull()?.get(Currencies.id)
+                ?: error("currencies row for 'USD' not found — run migration 004 first")
+        }
 
         val skinsUrl =
             "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins.json"
@@ -127,6 +141,8 @@ class SeedDB {
                     SkinPrice(
                         skinId = skin.getString("id"),
                         wear = wearCondition,
+                        sourceId = steamSourceId,
+                        currencyId = usdCurrencyId,
                         price = BigDecimal(price),
                         quantity = weekSales,
                     )
@@ -137,6 +153,8 @@ class SeedDB {
                         SkinPrice(
                             skinId = stattrackSkinId,
                             wear = wearCondition,
+                            sourceId = steamSourceId,
+                            currencyId = usdCurrencyId,
                             price = BigDecimal(price),
                             quantity = weekSales,
                         )

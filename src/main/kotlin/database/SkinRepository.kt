@@ -102,6 +102,8 @@ class SkinRepository : SkinRepositoryInterface {
                 val skinPrice = SkinPrice(
                     r[SkinPricesCurrent.skinId],
                     WearCondition(r[SkinPricesCurrent.wearId], ""),
+                    r[SkinPricesCurrent.sourceId],
+                    r[SkinPricesCurrent.currencyId],
                     r[SkinPricesCurrent.price],
                     r[SkinPricesCurrent.quantity]
                 )
@@ -150,6 +152,8 @@ class SkinRepository : SkinRepositoryInterface {
                 val skinPrice = SkinPrice(
                     r[SkinPricesCurrent.skinId],
                     WearCondition(r[SkinPricesCurrent.wearId], ""),
+                    r[SkinPricesCurrent.sourceId],
+                    r[SkinPricesCurrent.currencyId],
                     r[SkinPricesCurrent.price],
                     r[SkinPricesCurrent.quantity]
                 )
