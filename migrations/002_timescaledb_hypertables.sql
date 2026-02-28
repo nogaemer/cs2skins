@@ -51,6 +51,12 @@ DROP TABLE skin_price_history CASCADE;
 -- 4. Rename replacement table.
 ALTER TABLE skin_price_history_new RENAME TO skin_price_history;
 
+-- 4a. Ensure the seq SERIAL sequence is advanced to the current max.
+SELECT setval(
+    pg_get_serial_sequence('skin_price_history', 'seq'),
+    COALESCE((SELECT MAX(seq) FROM skin_price_history), 0),
+    TRUE
+);
 -- 5. Recreate composite index used by skin+wear range queries.
 CREATE INDEX idx_sph_skin_wear ON skin_price_history (skin_id, wear_id);
 
