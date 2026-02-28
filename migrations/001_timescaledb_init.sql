@@ -26,7 +26,8 @@ SELECT create_hypertable(
     'skin_price_history',
     'recorded_at',
     chunk_time_interval => 604800000::BIGINT,
-    if_not_exists       => TRUE
+    if_not_exists       => TRUE,
+    migrate_data        => TRUE
 );
 
 -- Register the epoch-ms "now" function so that integer-based
