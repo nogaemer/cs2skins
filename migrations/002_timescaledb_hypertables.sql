@@ -107,6 +107,12 @@ DROP TABLE tradeup_snapshots CASCADE;
 -- 4. Rename replacement table.
 ALTER TABLE tradeup_snapshots_new RENAME TO tradeup_snapshots;
 
+-- 4a. Align the sequence backing snapshot_seq with existing data to avoid
+--     future key conflicts when relying on the default value.
+SELECT setval(
+    pg_get_serial_sequence('tradeup_snapshots', 'snapshot_seq'),
+    COALESCE((SELECT MAX(snapshot_seq) FROM tradeup_snapshots), 0)
+);
 -- 5. Recreate index used by time-range queries on the hypertable.
 CREATE INDEX idx_ts_snapshot_time ON tradeup_snapshots (snapshot_time);
 
