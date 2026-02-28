@@ -117,7 +117,10 @@ class TradeUpController(
     ): ResponseEntity<TradeUpRiskSummaryResponse> {
         val now = System.currentTimeMillis()
         val toMs = if (to > 0L) to else now
-        val fromMs = if (from > 0L) from else now - 30L * 24 * 60 * 60 * 1000
+        val rawFrom = if (from > 0L) from else now - 30L * 24 * 60 * 60 * 1000
+        // Enforce a maximum lookback window to bound DB work (365 days)
+        val maxLookbackMs = 365L * 24 * 60 * 60 * 1000
+        val fromMs = maxOf(rawFrom, toMs - maxLookbackMs)
         val summary = tradeUpService.getTradeupRiskSummary(tradeupId, fromMs, toMs)
         return ResponseEntity.ok(summary)
     }

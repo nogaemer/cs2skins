@@ -62,11 +62,16 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
             val alreadyRecorded = conn.prepareStatement(LATEST_SNAPSHOT_SQL).use { stmt ->
                 stmt.setInt(1, tradeupId)
                 stmt.executeQuery().use { rs ->
-                    rs.next() &&
-                        approximatelyEqual(rs.getDouble("roi"), roi) &&
+                    if (!rs.next()) return@use false
+                    approximatelyEqual(rs.getDouble("roi"), roi) &&
                         approximatelyEqual(rs.getDouble("profit"), profit) &&
                         approximatelyEqual(rs.getDouble("input_cost"), inputCost) &&
-                        approximatelyEqual(rs.getDouble("output_cost"), outputCost)
+                        approximatelyEqual(rs.getDouble("output_cost"), outputCost) &&
+                        nullableApproximatelyEqual(rs.getNullableDouble("prob_profit"), probProfit) &&
+                        nullableApproximatelyEqual(rs.getNullableDouble("variance"), variance) &&
+                        nullableApproximatelyEqual(rs.getNullableDouble("p05"), p05) &&
+                        nullableApproximatelyEqual(rs.getNullableDouble("p50"), p50) &&
+                        nullableApproximatelyEqual(rs.getNullableDouble("p95"), p95)
                 }
             }
 
@@ -115,7 +120,7 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
         """.trimIndent()
 
         private val LATEST_SNAPSHOT_SQL = """
-            SELECT roi, profit, input_cost, output_cost
+            SELECT roi, profit, input_cost, output_cost, prob_profit, variance, p05, p50, p95
             FROM tradeup_snapshots
             WHERE tradeup_id = ?
             ORDER BY snapshot_time DESC
@@ -132,5 +137,16 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
 
         /** Returns true when [a] and [b] differ by less than [EPSILON]. */
         private fun approximatelyEqual(a: Double, b: Double) = kotlin.math.abs(a - b) < EPSILON
+
+        /** Returns true when both are null, or both are non-null and within [EPSILON]. */
+        private fun nullableApproximatelyEqual(a: Double?, b: Double?): Boolean = when {
+            a == null && b == null -> true
+            a == null || b == null -> false
+            else -> approximatelyEqual(a, b)
+        }
+
+        /** Reads a nullable DOUBLE PRECISION column from a ResultSet, returning null for SQL NULL. */
+        private fun java.sql.ResultSet.getNullableDouble(columnName: String): Double? =
+            getObject(columnName)?.let { (it as Number).toDouble() }
     }
 }
