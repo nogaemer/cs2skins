@@ -108,10 +108,44 @@ ALTER TABLE skin_price_history
 -- currency combinations, which is the typical access pattern
 -- after this migration.
 --
--- NOTE: This ALTER requires that no chunks are currently
--- compressed.  On a fresh or dev database this is always safe.
--- On a production system, run decompress_chunk() for any
--- compressed chunks first, then re-run this statement.
+-- NOTE: TimescaleDB requires that no chunks are currently
+-- compressed when changing compress_segmentby.  The block
+-- below makes this migration self-contained by decompressing
+-- any compressed chunks for skin_price_history before the ALTER.
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    -- If TimescaleDB is not installed / decompress_chunk is not
+    -- available, skip the decompression step.
+    PERFORM 1
+    FROM pg_catalog.pg_proc
+    WHERE proname = 'decompress_chunk'
+      AND pg_function_is_visible(oid);
+
+    IF NOT FOUND THEN
+        RAISE NOTICE 'timescaledb.decompress_chunk is not available; skipping chunk decompression before ALTER TABLE skin_price_history';
+        RETURN;
+    END IF;
+
+    -- Decompress any compressed chunks for the skin_price_history
+    -- hypertable so that the ALTER TABLE below will succeed even
+    -- if a compression policy has already run in production.
+    FOR r IN
+        SELECT chunk_schema, chunk_name
+        FROM   timescaledb_information.chunks
+        WHERE  hypertable_schema = 'public'
+          AND  hypertable_name   = 'skin_price_history'
+          AND  is_compressed     = true
+    LOOP
+        EXECUTE format(
+            'SELECT decompress_chunk(%I.%I)',
+            r.chunk_schema,
+            r.chunk_name
+        );
+    END LOOP;
+END;
+$$;
 ALTER TABLE skin_price_history
     SET (
         timescaledb.compress,
