@@ -50,9 +50,10 @@ On first startup, `SkinDatabaseInitializer` will:
 4. Enable the `timescaledb` extension.
 5. Convert `skin_price_history` and `tradeup_snapshots` to
    **hypertables** partitioned by week.
-6. Configure **compression** (chunks older than 7 days are compressed).
-7. Configure **data retention** for both hypertables
-   (chunks older than 90 days are dropped automatically).
+6. Configure **compression** (chunks older than 6 months are compressed).
+7. Configure **half-density thinning** for both hypertables
+   (every second row older than 2 years is deleted weekly, preserving
+   the time-series shape at 50 % resolution).
 
 If TimescaleDB is not available (e.g., plain PostgreSQL), setup step 4–7
 will be skipped with a warning and the application will continue running
@@ -103,10 +104,10 @@ Both hypertables have automatic background policies (applied by
 `SkinDatabaseInitializer` on startup and documented in
 `migrations/003_compression_retention.sql`):
 
-| Table                | Compress after | Retain raw data |
-|----------------------|---------------|-----------------|
-| `skin_price_history` | 7 days        | 90 days         |
-| `tradeup_snapshots`  | 7 days        | 90 days         |
+| Table                | Compress after | Thinning (half density after) |
+|----------------------|---------------|-------------------------------|
+| `skin_price_history` | 6 months      | 2 years                       |
+| `tradeup_snapshots`  | 6 months      | 2 years                       |
 
 ### Compression settings
 
@@ -120,27 +121,55 @@ tradeup_snapshots:
   compress_orderby   = 'snapshot_time DESC'
 ```
 
+### Thinning policy (half density)
+
+Rather than deleting all data beyond a hard cutoff, a weekly background
+procedure (`thin_out_old_data`) reduces density for data older than 2 years
+by removing temporal duplicates within 1-week windows.
+
+For each group (`skin_id + wear_id` in `skin_price_history`,
+`tradeup_id` in `tradeup_snapshots`), rows older than 2 years are bucketed
+into 1-week windows.  Only the **earliest** row in each bucket is kept;
+all later rows in the same bucket are deleted.
+
+**Example:** if there are price readings on Monday the 8th and Tuesday the 9th
+of the same week, both fall within the same 1-week bucket.  Monday 8th is
+kept; Tuesday 9th is removed.  The result is at most one reading per week per
+skin+wear instead of one per day.
+
+Because data older than 6 months is already compressed, the procedure
+automatically decompresses affected chunks before deleting rows, then
+re-compresses them afterwards.
+
 ### Changing policies at runtime
 
-No migration is required — use the TimescaleDB SQL functions directly:
+**Compression schedule** (no migration needed):
 
 ```sql
--- Change the compression schedule (e.g., compress after 14 days):
-SELECT alter_compression_policy('skin_price_history',  compress_after => INTERVAL '14 days');
-SELECT alter_compression_policy('tradeup_snapshots',   compress_after => INTERVAL '14 days');
-
--- Change the retention window (e.g., keep 180 days of raw data):
-SELECT alter_retention_policy('skin_price_history',    drop_after => INTERVAL '180 days');
-SELECT alter_retention_policy('tradeup_snapshots',     drop_after => INTERVAL '180 days');
-
--- Remove a policy entirely:
-SELECT remove_compression_policy('skin_price_history');
-SELECT remove_retention_policy('skin_price_history');
+SELECT alter_compression_policy('skin_price_history',  compress_after => INTERVAL '3 months');
+SELECT alter_compression_policy('tradeup_snapshots',   compress_after => INTERVAL '3 months');
 ```
 
-**Constraint:** the retention window must always be ≥ the compression
-window, otherwise TimescaleDB will refuse to compress chunks before they
-can be dropped.
+**Thinning threshold** (requires recreating the procedure):
+
+```sql
+-- Remove existing job first
+SELECT delete_job(job_id)
+FROM   timescaledb_information.jobs
+WHERE  proc_name = 'thin_out_old_data';
+
+-- Drop and recreate the procedure with updated INTERVAL values
+DROP PROCEDURE thin_out_old_data;
+-- Then run the updated CREATE OR REPLACE PROCEDURE block from migrations/003_compression_retention.sql
+-- and re-register: SELECT add_job('thin_out_old_data', INTERVAL '1 week');
+```
+
+**Remove compression policy entirely:**
+
+```sql
+SELECT remove_compression_policy('skin_price_history');
+SELECT remove_compression_policy('tradeup_snapshots');
+```
 
 ## Seeding Data
 
