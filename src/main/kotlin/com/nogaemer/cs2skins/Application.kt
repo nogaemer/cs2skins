@@ -143,7 +143,20 @@ class SkinDatabaseInitializer {
                 )"""
             )
 
-            logger.info("TimescaleDB hypertables, compression and retention policies configured successfully")
+            // Smoke test: verify both hypertables are registered in the catalog.
+            val confirmed = mutableListOf<String>()
+            exec(
+                """SELECT hypertable_name
+                   FROM   timescaledb_information.hypertables
+                   WHERE  hypertable_name IN ('skin_price_history', 'tradeup_snapshots')
+                   ORDER  BY hypertable_name"""
+            ) { rs ->
+                while (rs.next()) confirmed.add(rs.getString("hypertable_name"))
+            }
+            check(confirmed.size == 2) {
+                "TimescaleDB hypertables not fully initialized – found: $confirmed"
+            }
+            logger.info("TimescaleDB hypertables confirmed: $confirmed")
         } catch (e: Exception) {
             logger.warn("TimescaleDB setup skipped (extension may not be available): ${e.message}")
         }
