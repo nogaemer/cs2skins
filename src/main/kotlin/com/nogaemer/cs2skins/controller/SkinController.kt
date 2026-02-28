@@ -53,12 +53,14 @@ class SkinController(private val skinService: SkinService) {
     /**
      * Returns price history for a specific skin+wear combination.
      *
-     * @param skinId    the skin identifier
-     * @param wearId    the wear condition identifier
-     * @param from      start of range, epoch milliseconds (default: 30 days ago)
-     * @param to        end of range, epoch milliseconds (default: now)
-     * @param page      zero-based page index (default: 0)
-     * @param pageSize  number of records per page (default: 100, max: 1000)
+     * @param skinId     the skin identifier
+     * @param wearId     the wear condition identifier
+     * @param from       start of range, epoch milliseconds (default: 30 days ago)
+     * @param to         end of range, epoch milliseconds (default: now)
+     * @param sourceId   filter to a specific price source id (default: all sources)
+     * @param currencyId filter to a specific currency id (default: all currencies)
+     * @param page       zero-based page index (default: 0)
+     * @param pageSize   number of records per page (default: 100, max: 1000)
      */
     @GetMapping("/{skinId}/price-history/{wearId}")
     suspend fun getSkinPriceHistory(
@@ -66,13 +68,15 @@ class SkinController(private val skinService: SkinService) {
         @PathVariable wearId: String,
         @RequestParam(defaultValue = "0") from: Long,
         @RequestParam(defaultValue = "0") to: Long,
+        @RequestParam(required = false) sourceId: Int?,
+        @RequestParam(required = false) currencyId: Int?,
         @RequestParam(defaultValue = "0") page: Int,
         @RequestParam(defaultValue = "100") pageSize: Int
     ): ResponseEntity<List<SkinPriceHistoryResponse>> {
         val now = System.currentTimeMillis()
         val fromMs = if (from > 0L) from else now - 30L * 24 * 60 * 60 * 1000
         val toMs = if (to > 0L) to else now
-        val history = skinService.getSkinPriceHistory(skinId, wearId, fromMs, toMs)
+        val history = skinService.getSkinPriceHistory(skinId, wearId, fromMs, toMs, sourceId, currencyId)
 
         val safePageSize = pageSize.coerceIn(1, MAX_PRICE_HISTORY_PAGE_SIZE)
         val safePage = if (page < 0) 0 else page

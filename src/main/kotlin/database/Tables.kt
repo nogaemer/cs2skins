@@ -5,6 +5,7 @@ import org.jetbrains.exposed.sql.ReferenceOption
 import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.javatime.timestampWithTimeZone
 import java.math.BigDecimal
+import java.time.OffsetDateTime
 
 object Collections : Table("collections") {
     val collectionId = varchar("collection_id", 255)
@@ -37,6 +38,30 @@ object WearConditions : Table("wear_conditions") {
     override val primaryKey = PrimaryKey(wearId)
 }
 
+/**
+ * Price data providers (e.g. Steam, CSFloat, Buff163).
+ */
+object PriceSources : Table("price_sources") {
+    val id = integer("id").autoIncrement()
+    val name = text("name").uniqueIndex()
+    val baseUrl = text("base_url").nullable()
+    val active = bool("active").default(true)
+
+    override val primaryKey = PrimaryKey(id)
+}
+
+/**
+ * ISO 4217 currencies supported for pricing (e.g. USD, EUR, CNY).
+ */
+object Currencies : Table("currencies") {
+    val id = integer("id").autoIncrement()
+    val code = char("code", 3).uniqueIndex()
+    val symbol = text("symbol").nullable()
+    val isBase = bool("is_base").default(false)
+
+    override val primaryKey = PrimaryKey(id)
+}
+
 object Skins : Table("skins") {
     val skinId = varchar("skin_id", 255)
     val collectionId = varchar("collection_id", 255)
@@ -66,7 +91,7 @@ object Skins : Table("skins") {
 }
 
 /**
- * Current price snapshot per skin+wear (latest known price).
+ * Current price snapshot per skin+wear+source+currency (latest known price).
  * This is the primary table for read queries that need the most recent price.
  */
 object SkinPricesCurrent : Table("skin_prices_current") {
@@ -74,19 +99,25 @@ object SkinPricesCurrent : Table("skin_prices_current") {
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val wearId = varchar("wear_id", 255)
         .references(WearConditions.wearId, onDelete = ReferenceOption.RESTRICT, onUpdate = ReferenceOption.CASCADE)
+    val sourceId = integer("source_id")
+        .references(PriceSources.id, onDelete = ReferenceOption.RESTRICT, onUpdate = ReferenceOption.CASCADE)
+    val currencyId = integer("currency_id")
+        .references(Currencies.id, onDelete = ReferenceOption.RESTRICT, onUpdate = ReferenceOption.CASCADE)
     val price = decimal("price", 10, 2).default(java.math.BigDecimal.ZERO)
     val quantity = integer("quantity").default(0)
     val updatedAt = long("updated_at").clientDefault { System.currentTimeMillis() }
 
-    override val primaryKey = PrimaryKey(skinId, wearId)
+    override val primaryKey = PrimaryKey(skinId, wearId, sourceId, currencyId)
 
     init {
         index("idx_spc_wear", false, wearId)
+        index("idx_spc_source", false, sourceId)
+        index("idx_spc_currency", false, currencyId)
     }
 }
 
 /**
- * Historical price records per skin+wear (TimescaleDB hypertable on recorded_at).
+ * Historical price records per skin+wear+source+currency (TimescaleDB hypertable on recorded_at).
  * Partitioned by week; stores one row per price snapshot event.
  * The recorded_at column holds a timestamptz value.
  * A surrogate `seq` auto-increment is included in the primary key to guarantee
@@ -98,6 +129,10 @@ object SkinPriceHistory : Table("skin_price_history") {
         .references(Skins.skinId, onDelete = ReferenceOption.CASCADE, onUpdate = ReferenceOption.CASCADE)
     val wearId = varchar("wear_id", 255)
         .references(WearConditions.wearId, onDelete = ReferenceOption.RESTRICT, onUpdate = ReferenceOption.CASCADE)
+    val sourceId = integer("source_id")
+        .references(PriceSources.id, onDelete = ReferenceOption.RESTRICT, onUpdate = ReferenceOption.CASCADE)
+    val currencyId = integer("currency_id")
+        .references(Currencies.id, onDelete = ReferenceOption.RESTRICT, onUpdate = ReferenceOption.CASCADE)
     val recordedAt = timestampWithTimeZone("recorded_at")
     val price = decimal("price", 10, 2).default(java.math.BigDecimal.ZERO)
     val quantity = integer("quantity").default(0)
@@ -108,6 +143,8 @@ object SkinPriceHistory : Table("skin_price_history") {
 
     init {
         index("idx_sph_skin_wear", false, skinId, wearId)
+        index("idx_sph_source", false, sourceId)
+        index("idx_sph_currency", false, currencyId)
     }
 }
 
@@ -274,6 +311,20 @@ data class WearCondition(
     val name: String
 )
 
+data class PriceSource(
+    val id: Int,
+    val name: String,
+    val baseUrl: String?,
+    val active: Boolean
+)
+
+data class Currency(
+    val id: Int,
+    val code: String,
+    val symbol: String?,
+    val isBase: Boolean
+)
+
 data class SkinDTO(
     val skinId: String,
     val collectionId: String?,
@@ -292,8 +343,36 @@ data class SkinDTO(
 data class SkinPrice(
     val skinId: String,
     val wear: WearCondition,
+    val sourceId: Int,
+    val currencyId: Int,
     val price: BigDecimal,
     val quantity: Int
+)
+
+/** Full current-price DTO including source and currency metadata (for API / new query methods). */
+data class SkinPriceDTO(
+    val skinId: String,
+    val wearId: String,
+    val sourceId: Int,
+    val sourceName: String,
+    val currencyId: Int,
+    val currencyCode: String,
+    val price: BigDecimal,
+    val quantity: Int,
+    val updatedAt: Long
+)
+
+/** Full history-price DTO including source and currency metadata. */
+data class SkinPriceHistoryDTO(
+    val skinId: String,
+    val wearId: String,
+    val sourceId: Int,
+    val sourceName: String,
+    val currencyId: Int,
+    val currencyCode: String,
+    val price: BigDecimal,
+    val quantity: Int,
+    val recordedAt: OffsetDateTime
 )
 
 // Skin with full details

@@ -2,6 +2,9 @@ package database
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.jetbrains.exposed.sql.insertIgnore
+import org.jetbrains.exposed.sql.selectAll
+import org.jetbrains.exposed.sql.transactions.transaction
 import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigDecimal
@@ -41,6 +44,32 @@ class SeedDB {
      */
     suspend fun seedSkins() = withContext(Dispatchers.IO) {
         skinRepo.deleteAll()
+
+        // Resolve Steam source ID and USD currency ID, inserting them if not yet present
+        // (e.g. on a fresh DB that hasn't had migration 004 run manually).
+        val steamSourceId = transaction {
+            PriceSources.selectAll().where { PriceSources.name eq "steam" }
+                .firstOrNull()?.get(PriceSources.id)
+                ?: PriceSources.insertIgnore {
+                    it[PriceSources.name]    = "steam"
+                    it[PriceSources.baseUrl] = "https://steamcommunity.com/market"
+                }.let {
+                    PriceSources.selectAll().where { PriceSources.name eq "steam" }
+                        .first()[PriceSources.id]
+                }
+        }
+        val usdCurrencyId = transaction {
+            Currencies.selectAll().where { Currencies.code eq "USD" }
+                .firstOrNull()?.get(Currencies.id)
+                ?: Currencies.insertIgnore {
+                    it[Currencies.code]   = "USD"
+                    it[Currencies.symbol] = "$"
+                    it[Currencies.isBase] = true
+                }.let {
+                    Currencies.selectAll().where { Currencies.code eq "USD" }
+                        .first()[Currencies.id]
+                }
+        }
 
         val skinsUrl =
             "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins.json"
@@ -127,6 +156,8 @@ class SeedDB {
                     SkinPrice(
                         skinId = skin.getString("id"),
                         wear = wearCondition,
+                        sourceId = steamSourceId,
+                        currencyId = usdCurrencyId,
                         price = BigDecimal(price),
                         quantity = weekSales,
                     )
@@ -137,6 +168,8 @@ class SeedDB {
                         SkinPrice(
                             skinId = stattrackSkinId,
                             wear = wearCondition,
+                            sourceId = steamSourceId,
+                            currencyId = usdCurrencyId,
                             price = BigDecimal(price),
                             quantity = weekSales,
                         )

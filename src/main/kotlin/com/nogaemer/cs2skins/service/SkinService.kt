@@ -71,26 +71,35 @@ class SkinService(
     }
 
     /**
-     * Returns raw price history points for a skin+wear combination, filtered by an optional time range.
+     * Returns raw price history points for a skin+wear combination, filtered by an optional time range,
+     * source, and currency.
      *
-     * @param skinId  the skin identifier
-     * @param wearId  the wear condition identifier
-     * @param fromMs  start of time range (epoch milliseconds), or null for all history
-     * @param toMs    end of time range (epoch milliseconds), or null for all history
+     * @param skinId     the skin identifier
+     * @param wearId     the wear condition identifier
+     * @param fromMs     start of time range (epoch milliseconds), or null for all history
+     * @param toMs       end of time range (epoch milliseconds), or null for all history
+     * @param sourceId   filter to a specific price source id, or null for all sources
+     * @param currencyId filter to a specific currency id, or null for all currencies
      */
     suspend fun getSkinPriceHistory(
         skinId: String,
         wearId: String,
         fromMs: Long? = null,
-        toMs: Long? = null
+        toMs: Long? = null,
+        sourceId: Int? = null,
+        currencyId: Int? = null
     ): List<SkinPriceHistoryResponse> = withContext(Dispatchers.IO) {
         val from = fromMs?.let { OffsetDateTime.ofInstant(Instant.ofEpochMilli(it), ZoneOffset.UTC) }
         val to = toMs?.let { OffsetDateTime.ofInstant(Instant.ofEpochMilli(it), ZoneOffset.UTC) }
-        skinPriceRepository.findHistory(skinId, wearId, from, to)
+        skinPriceRepository.findHistory(skinId, wearId, sourceId, currencyId, from, to)
             .map { point ->
                 SkinPriceHistoryResponse(
                     skinId = point.skinId,
                     wearId = point.wearId,
+                    sourceId = point.sourceId,
+                    sourceName = point.sourceName,
+                    currencyId = point.currencyId,
+                    currencyCode = point.currencyCode,
                     recordedAt = point.recordedAt.toInstant().toEpochMilli(),
                     price = point.price,
                     quantity = point.quantity

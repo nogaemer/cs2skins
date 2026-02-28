@@ -31,10 +31,12 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
         val now = OffsetDateTime.now(ZoneOffset.UTC)
         val nowMs = now.toInstant().toEpochMilli()
 
-        // Atomic upsert: INSERT … ON CONFLICT (skin_id, wear_id) DO UPDATE SET …
+        // Atomic upsert: INSERT … ON CONFLICT (skin_id, wear_id, source_id, currency_id) DO UPDATE SET …
         SkinPricesCurrent.upsert {
             it[SkinPricesCurrent.skinId] = skinPrice.skinId
             it[SkinPricesCurrent.wearId] = wearId
+            it[SkinPricesCurrent.sourceId] = skinPrice.sourceId
+            it[SkinPricesCurrent.currencyId] = skinPrice.currencyId
             it[SkinPricesCurrent.price] = skinPrice.price
             it[SkinPricesCurrent.quantity] = skinPrice.quantity
             it[SkinPricesCurrent.updatedAt] = nowMs
@@ -44,6 +46,8 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
         SkinPriceHistory.insert {
             it[SkinPriceHistory.skinId] = skinPrice.skinId
             it[SkinPriceHistory.wearId] = wearId
+            it[SkinPriceHistory.sourceId] = skinPrice.sourceId
+            it[SkinPriceHistory.currencyId] = skinPrice.currencyId
             it[SkinPriceHistory.recordedAt] = now
             it[SkinPriceHistory.price] = skinPrice.price
             it[SkinPriceHistory.quantity] = skinPrice.quantity
@@ -68,6 +72,8 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
         SkinPricesCurrent.batchUpsert(skinPrices) { skinPrice ->
             this[SkinPricesCurrent.skinId] = skinPrice.skinId
             this[SkinPricesCurrent.wearId] = skinPrice.wear.wearId
+            this[SkinPricesCurrent.sourceId] = skinPrice.sourceId
+            this[SkinPricesCurrent.currencyId] = skinPrice.currencyId
             this[SkinPricesCurrent.price] = skinPrice.price
             this[SkinPricesCurrent.quantity] = skinPrice.quantity
             this[SkinPricesCurrent.updatedAt] = nowMs
@@ -77,6 +83,8 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
         SkinPriceHistory.batchInsert(skinPrices) { skinPrice ->
             this[SkinPriceHistory.skinId] = skinPrice.skinId
             this[SkinPriceHistory.wearId] = skinPrice.wear.wearId
+            this[SkinPriceHistory.sourceId] = skinPrice.sourceId
+            this[SkinPriceHistory.currencyId] = skinPrice.currencyId
             this[SkinPriceHistory.recordedAt] = now
             this[SkinPriceHistory.price] = skinPrice.price
             this[SkinPriceHistory.quantity] = skinPrice.quantity
@@ -84,17 +92,38 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
     }
 
 
-    override suspend fun findBySkin(skinId: String): List<SkinPrice> = dbQuery {
-        val rows = SkinPricesCurrent.selectAll().where { SkinPricesCurrent.skinId eq skinId }.toList()
+    override suspend fun findBySkin(
+        skinId: String,
+        sourceId: Int?,
+        currencyId: Int?
+    ): List<SkinPrice> = dbQuery {
+        var query = SkinPricesCurrent.selectAll().where { SkinPricesCurrent.skinId eq skinId }
+        sourceId?.let { query = query.andWhere { SkinPricesCurrent.sourceId eq it } }
+        currencyId?.let { query = query.andWhere { SkinPricesCurrent.currencyId eq it } }
+        val rows = query.toList()
         if (rows.isEmpty()) return@dbQuery emptyList()
         val wearById = loadWearConditions(rows.map { it[SkinPricesCurrent.wearId] }.distinct())
         rows.map { rowToSkinPrice(it, wearById) }
     }
 
-    override suspend fun findBySkinAndWear(skinId: String, wearId: String): SkinPrice? = dbQuery {
-        val row = SkinPricesCurrent.selectAll()
+    override suspend fun findBySkinAndWear(
+        skinId: String,
+        wearId: String,
+        sourceId: Int?,
+        currencyId: Int?
+    ): SkinPrice? = dbQuery {
+        var query = SkinPricesCurrent.selectAll()
             .where { (SkinPricesCurrent.skinId eq skinId) and (SkinPricesCurrent.wearId eq wearId) }
-            .singleOrNull() ?: return@dbQuery null
+        sourceId?.let { query = query.andWhere { SkinPricesCurrent.sourceId eq it } }
+        currencyId?.let { query = query.andWhere { SkinPricesCurrent.currencyId eq it } }
+        // When both sourceId and currencyId are given the composite PK guarantees at most one row;
+        // otherwise multiple rows may exist (one per source/currency) and we deterministically pick the most recently updated.
+        val row = if (sourceId != null && currencyId != null) {
+            query.singleOrNull()
+        } else {
+            query.orderBy(SkinPricesCurrent.updatedAt to SortOrder.DESC).firstOrNull()
+        }
+        row ?: return@dbQuery null
         val wearById = loadWearConditions(listOf(wearId))
         rowToSkinPrice(row, wearById)
     }
@@ -115,36 +144,123 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
     }
 
     /**
-     * Returns the price history for a skin+wear combination, optionally filtered by time range.
-     * Results are ordered by recordedAt ascending.
+     * Returns the current price for a specific skin+wear+source+currency combination.
+     */
+    override suspend fun getCurrentPrice(
+        skinId: String,
+        wearId: String,
+        sourceId: Int,
+        currencyId: Int
+    ): SkinPriceDTO? = dbQuery {
+        SkinPricesCurrent
+            .join(PriceSources, JoinType.INNER, SkinPricesCurrent.sourceId, PriceSources.id)
+            .join(Currencies, JoinType.INNER, SkinPricesCurrent.currencyId, Currencies.id)
+            .selectAll()
+            .where {
+                (SkinPricesCurrent.skinId eq skinId) and
+                (SkinPricesCurrent.wearId eq wearId) and
+                (SkinPricesCurrent.sourceId eq sourceId) and
+                (SkinPricesCurrent.currencyId eq currencyId)
+            }
+            .firstOrNull()
+            ?.let { rowToSkinPriceDTO(it) }
+    }
+
+    /**
+     * Returns the latest price for a skin+wear from all available sources in a given currency.
+     */
+    override suspend fun getLatestPriceAllSources(
+        skinId: String,
+        wearId: String,
+        currencyId: Int
+    ): List<SkinPriceDTO> = dbQuery {
+        SkinPricesCurrent
+            .join(PriceSources, JoinType.INNER, SkinPricesCurrent.sourceId, PriceSources.id)
+            .join(Currencies, JoinType.INNER, SkinPricesCurrent.currencyId, Currencies.id)
+            .selectAll()
+            .where {
+                (SkinPricesCurrent.skinId eq skinId) and
+                (SkinPricesCurrent.wearId eq wearId) and
+                (SkinPricesCurrent.currencyId eq currencyId)
+            }
+            .map { rowToSkinPriceDTO(it) }
+    }
+
+    /**
+     * Returns all current prices for a skin+wear in a given currency (alias for getLatestPriceAllSources).
+     */
+    override suspend fun getPriceByCurrency(
+        skinId: String,
+        wearId: String,
+        currencyId: Int
+    ): List<SkinPriceDTO> = getLatestPriceAllSources(skinId, wearId, currencyId)
+
+    /**
+     * Returns all current prices for a skin+wear from a given source across all currencies.
+     */
+    override suspend fun getPriceBySource(
+        skinId: String,
+        wearId: String,
+        sourceId: Int
+    ): List<SkinPriceDTO> = dbQuery {
+        SkinPricesCurrent
+            .join(PriceSources, JoinType.INNER, SkinPricesCurrent.sourceId, PriceSources.id)
+            .join(Currencies, JoinType.INNER, SkinPricesCurrent.currencyId, Currencies.id)
+            .selectAll()
+            .where {
+                (SkinPricesCurrent.skinId eq skinId) and
+                (SkinPricesCurrent.wearId eq wearId) and
+                (SkinPricesCurrent.sourceId eq sourceId)
+            }
+            .map { rowToSkinPriceDTO(it) }
+    }
+
+    /**
+     * Returns the price history for a skin+wear combination, optionally filtered by
+     * source, currency, and time range. Results are ordered by recordedAt ascending.
      *
-     * @param skinId   the skin identifier
-     * @param wearId   the wear condition identifier
-     * @param from     start of time range (inclusive), or null for all history
-     * @param to       end of time range (inclusive), or null for all history
+     * @param skinId     the skin identifier
+     * @param wearId     the wear condition identifier
+     * @param sourceId   filter to a specific price source, or null for all sources
+     * @param currencyId filter to a specific currency, or null for all currencies
+     * @param from       start of time range (inclusive), or null for all history
+     * @param to         end of time range (inclusive), or null for all history
      */
     override suspend fun findHistory(
         skinId: String,
         wearId: String,
+        sourceId: Int?,
+        currencyId: Int?,
         from: OffsetDateTime?,
         to: OffsetDateTime?
-    ): List<SkinPriceHistoryPoint> = dbQuery {
-        var query = SkinPriceHistory.selectAll()
+    ): List<SkinPriceHistoryDTO> = dbQuery {
+        var query = SkinPriceHistory
+            .join(PriceSources, JoinType.INNER, SkinPriceHistory.sourceId, PriceSources.id)
+            .join(Currencies, JoinType.INNER, SkinPriceHistory.currencyId, Currencies.id)
+            .selectAll()
             .where { (SkinPriceHistory.skinId eq skinId) and (SkinPriceHistory.wearId eq wearId) }
 
+        sourceId?.let { query = query.andWhere { SkinPriceHistory.sourceId eq it } }
+        currencyId?.let { query = query.andWhere { SkinPriceHistory.currencyId eq it } }
         from?.let { query = query.andWhere { SkinPriceHistory.recordedAt greaterEq it } }
         to?.let { query = query.andWhere { SkinPriceHistory.recordedAt lessEq it } }
 
         query.orderBy(SkinPriceHistory.recordedAt to SortOrder.ASC).map { row ->
-            SkinPriceHistoryPoint(
-                skinId = row[SkinPriceHistory.skinId],
-                wearId = row[SkinPriceHistory.wearId],
-                recordedAt = row[SkinPriceHistory.recordedAt],
-                price = row[SkinPriceHistory.price],
-                quantity = row[SkinPriceHistory.quantity]
-            )
+            rowToSkinPriceHistoryDTO(row)
         }
     }
+
+    /**
+     * Returns the full price history for a skin+wear+source+currency combination.
+     */
+    override suspend fun getPriceHistory(
+        skinId: String,
+        wearId: String,
+        sourceId: Int,
+        currencyId: Int,
+        from: OffsetDateTime?,
+        to: OffsetDateTime?
+    ): List<SkinPriceHistoryDTO> = findHistory(skinId, wearId, sourceId, currencyId, from, to)
 
     override suspend fun update(skinPrice: SkinPrice): Boolean = dbQuery {
         val wearId = ensureWearExists(skinPrice.wear)
@@ -152,7 +268,10 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
         val nowMs = now.toInstant().toEpochMilli()
 
         val updated = SkinPricesCurrent.update({
-            (SkinPricesCurrent.skinId eq skinPrice.skinId) and (SkinPricesCurrent.wearId eq wearId)
+            (SkinPricesCurrent.skinId eq skinPrice.skinId) and
+            (SkinPricesCurrent.wearId eq wearId) and
+            (SkinPricesCurrent.sourceId eq skinPrice.sourceId) and
+            (SkinPricesCurrent.currencyId eq skinPrice.currencyId)
         }) {
             it[SkinPricesCurrent.price] = skinPrice.price
             it[SkinPricesCurrent.quantity] = skinPrice.quantity
@@ -163,6 +282,8 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
             SkinPriceHistory.insert {
                 it[SkinPriceHistory.skinId] = skinPrice.skinId
                 it[SkinPriceHistory.wearId] = wearId
+                it[SkinPriceHistory.sourceId] = skinPrice.sourceId
+                it[SkinPriceHistory.currencyId] = skinPrice.currencyId
                 it[SkinPriceHistory.recordedAt] = now
                 it[SkinPriceHistory.price] = skinPrice.price
                 it[SkinPriceHistory.quantity] = skinPrice.quantity
@@ -190,6 +311,8 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
     private fun rowToSkinPrice(row: ResultRow, wear: WearCondition) = SkinPrice(
         skinId = row[SkinPricesCurrent.skinId],
         wear = wear,
+        sourceId = row[SkinPricesCurrent.sourceId],
+        currencyId = row[SkinPricesCurrent.currencyId],
         price = row[SkinPricesCurrent.price],
         quantity = row[SkinPricesCurrent.quantity]
     )
@@ -197,26 +320,60 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
     /** Used when wear conditions have been pre-loaded in bulk. */
     private fun rowToSkinPrice(row: ResultRow, wearById: Map<String, WearCondition>) =
         rowToSkinPrice(row, wearById[row[SkinPricesCurrent.wearId]] ?: WearCondition(row[SkinPricesCurrent.wearId], ""))
-}
 
-/** Immutable point in a skin price history series. */
-data class SkinPriceHistoryPoint(
-    val skinId: String,
-    val wearId: String,
-    val recordedAt: OffsetDateTime,
-    val price: java.math.BigDecimal,
-    val quantity: Int
-)
+    /** Maps a joined row (SkinPricesCurrent + PriceSources + Currencies) to a SkinPriceDTO. */
+    private fun rowToSkinPriceDTO(row: ResultRow) = SkinPriceDTO(
+        skinId = row[SkinPricesCurrent.skinId],
+        wearId = row[SkinPricesCurrent.wearId],
+        sourceId = row[SkinPricesCurrent.sourceId],
+        sourceName = row[PriceSources.name],
+        currencyId = row[SkinPricesCurrent.currencyId],
+        currencyCode = row[Currencies.code],
+        price = row[SkinPricesCurrent.price],
+        quantity = row[SkinPricesCurrent.quantity],
+        updatedAt = row[SkinPricesCurrent.updatedAt]
+    )
+
+    /** Maps a joined row (SkinPriceHistory + PriceSources + Currencies) to a SkinPriceHistoryDTO. */
+    private fun rowToSkinPriceHistoryDTO(row: ResultRow) = SkinPriceHistoryDTO(
+        skinId = row[SkinPriceHistory.skinId],
+        wearId = row[SkinPriceHistory.wearId],
+        sourceId = row[SkinPriceHistory.sourceId],
+        sourceName = row[PriceSources.name],
+        currencyId = row[SkinPriceHistory.currencyId],
+        currencyCode = row[Currencies.code],
+        price = row[SkinPriceHistory.price],
+        quantity = row[SkinPriceHistory.quantity],
+        recordedAt = row[SkinPriceHistory.recordedAt]
+    )
+}
 
 interface SkinPriceRepositoryInterface {
     suspend fun create(skinPrice: SkinPrice): SkinPrice
     suspend fun createAll(skinPrices: List<SkinPrice>)
-    suspend fun findBySkin(skinId: String): List<SkinPrice>
-    suspend fun findBySkinAndWear(skinId: String, wearId: String): SkinPrice?
+    suspend fun findBySkin(skinId: String, sourceId: Int? = null, currencyId: Int? = null): List<SkinPrice>
+    suspend fun findBySkinAndWear(skinId: String, wearId: String, sourceId: Int? = null, currencyId: Int? = null): SkinPrice?
     suspend fun findWithWearCondition(skinId: String): List<PriceWithWear>
-    suspend fun findHistory(skinId: String, wearId: String, from: OffsetDateTime? = null, to: OffsetDateTime? = null): List<SkinPriceHistoryPoint>
+    suspend fun getCurrentPrice(skinId: String, wearId: String, sourceId: Int, currencyId: Int): SkinPriceDTO?
+    suspend fun getLatestPriceAllSources(skinId: String, wearId: String, currencyId: Int): List<SkinPriceDTO>
+    suspend fun getPriceByCurrency(skinId: String, wearId: String, currencyId: Int): List<SkinPriceDTO>
+    suspend fun getPriceBySource(skinId: String, wearId: String, sourceId: Int): List<SkinPriceDTO>
+    suspend fun findHistory(
+        skinId: String,
+        wearId: String,
+        sourceId: Int? = null,
+        currencyId: Int? = null,
+        from: OffsetDateTime? = null,
+        to: OffsetDateTime? = null
+    ): List<SkinPriceHistoryDTO>
+    suspend fun getPriceHistory(
+        skinId: String,
+        wearId: String,
+        sourceId: Int,
+        currencyId: Int,
+        from: OffsetDateTime? = null,
+        to: OffsetDateTime? = null
+    ): List<SkinPriceHistoryDTO>
     suspend fun update(skinPrice: SkinPrice): Boolean
     suspend fun deleteAll(): Boolean
 }
-
-

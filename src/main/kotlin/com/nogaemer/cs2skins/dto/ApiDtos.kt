@@ -136,6 +136,10 @@ data class TradeUpHistoryPoint(
 data class SkinPriceHistoryResponse(
     val skinId: String,
     val wearId: String,
+    val sourceId: Int,
+    val sourceName: String,
+    val currencyId: Int,
+    val currencyCode: String,
     val recordedAt: Long,
     val price: java.math.BigDecimal,
     val quantity: Int
