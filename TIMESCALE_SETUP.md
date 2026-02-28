@@ -50,9 +50,10 @@ On first startup, `SkinDatabaseInitializer` will:
 4. Enable the `timescaledb` extension.
 5. Convert `skin_price_history` and `tradeup_snapshots` to
    **hypertables** partitioned by week.
-6. Configure **compression** (chunks older than 7 days are compressed).
-7. Configure **data retention** for `skin_price_history`
-   (rows older than 1 year are dropped automatically).
+6. Configure **compression** (chunks older than 6 months are compressed).
+7. Configure **half-density thinning** for both hypertables
+   (every second row older than 2 years is deleted weekly, preserving
+   the time-series shape at 50 % resolution).
 
 If TimescaleDB is not available (e.g., plain PostgreSQL), setup step 4–7
 will be skipped with a warning and the application will continue running
@@ -89,9 +90,86 @@ using regular tables.
 
 ## Time-Series Columns
 
-Both hypertables use `BIGINT` columns storing **epoch milliseconds** as
-the time dimension.  TimescaleDB chunk intervals are set to 1 week
-(`604 800 000` ms).
+Both hypertables use `TIMESTAMPTZ` columns as their time dimension.
+TimescaleDB chunk intervals are set to 1 week (`INTERVAL '7 days'`).
+
+| Table                | Time column    | Type         |
+|----------------------|----------------|--------------|
+| `skin_price_history` | `recorded_at`  | `TIMESTAMPTZ`|
+| `tradeup_snapshots`  | `snapshot_time`| `TIMESTAMPTZ`|
+
+## Compression and Retention Policies
+
+Both hypertables have automatic background policies (applied by
+`SkinDatabaseInitializer` on startup and documented in
+`migrations/003_compression_retention.sql`):
+
+| Table                | Compress after | Thinning (half density after) |
+|----------------------|---------------|-------------------------------|
+| `skin_price_history` | 6 months      | 2 years                       |
+| `tradeup_snapshots`  | 6 months      | 2 years                       |
+
+### Compression settings
+
+```
+skin_price_history:
+  compress_segmentby = 'skin_id, wear_id'   -- skip unrelated per-skin segments
+  compress_orderby   = 'recorded_at DESC'   -- optimal delta-compression
+
+tradeup_snapshots:
+  compress_segmentby = 'tradeup_id'         -- skip unrelated per-tradeup segments
+  compress_orderby   = 'snapshot_time DESC'
+```
+
+### Thinning policy (half density)
+
+Rather than deleting all data beyond a hard cutoff, a weekly background
+procedure (`thin_out_old_data`) reduces density for data older than 2 years
+by removing temporal duplicates within 1-week windows.
+
+For each group (`skin_id + wear_id` in `skin_price_history`,
+`tradeup_id` in `tradeup_snapshots`), rows older than 2 years are bucketed
+into 1-week windows.  Only the **earliest** row in each bucket is kept;
+all later rows in the same bucket are deleted.
+
+**Example:** if there are price readings on Monday the 8th and Tuesday the 9th
+of the same week, both fall within the same 1-week bucket.  Monday 8th is
+kept; Tuesday 9th is removed.  The result is at most one reading per week per
+skin+wear instead of one per day.
+
+Because data older than 6 months is already compressed, the procedure
+automatically decompresses affected chunks before deleting rows, then
+re-compresses them afterwards.
+
+### Changing policies at runtime
+
+**Compression schedule** (no migration needed):
+
+```sql
+SELECT alter_compression_policy('skin_price_history',  compress_after => INTERVAL '3 months');
+SELECT alter_compression_policy('tradeup_snapshots',   compress_after => INTERVAL '3 months');
+```
+
+**Thinning threshold** (requires recreating the procedure):
+
+```sql
+-- Remove existing job first
+SELECT delete_job(job_id)
+FROM   timescaledb_information.jobs
+WHERE  proc_name = 'thin_out_old_data';
+
+-- Drop and recreate the procedure with updated INTERVAL values
+DROP PROCEDURE thin_out_old_data;
+-- Then run the updated CREATE OR REPLACE PROCEDURE block from migrations/003_compression_retention.sql
+-- and re-register: SELECT add_job('thin_out_old_data', INTERVAL '1 week');
+```
+
+**Remove compression policy entirely:**
+
+```sql
+SELECT remove_compression_policy('skin_price_history');
+SELECT remove_compression_policy('tradeup_snapshots');
+```
 
 ## Seeding Data
 
