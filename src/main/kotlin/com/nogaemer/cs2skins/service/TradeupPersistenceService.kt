@@ -20,11 +20,6 @@ import java.time.ZoneOffset
 class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
 
     /**
-     * @param probProfit fraction of outcomes that exceed the input cost (optional)
-     * @param variance   population variance of the outcome distribution (optional)
-     * @param p05        5th-percentile outcome value (optional)
-     * @param p50        50th-percentile (median) outcome value (optional)
-     * @param p95        95th-percentile outcome value (optional)
      * @return `true` if a new snapshot was appended; `false` when the snapshot
      *         was skipped because the metrics are identical to the most-recent one.
      */
@@ -33,12 +28,7 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
         roi: Double,
         profit: Double,
         inputCost: Double,
-        outputCost: Double,
-        probProfit: Double? = null,
-        variance: Double? = null,
-        p05: Double? = null,
-        p50: Double? = null,
-        p95: Double? = null,
+        outputCost: Double
     ): Boolean = jdbcTemplate.execute { conn: Connection ->
         val wasAutoCommit = conn.autoCommit
         conn.autoCommit = false
@@ -80,11 +70,6 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
                     stmt.setDouble(4, profit)
                     stmt.setDouble(5, inputCost)
                     stmt.setDouble(6, outputCost)
-                    if (probProfit != null) stmt.setDouble(7, probProfit) else stmt.setNull(7, java.sql.Types.DOUBLE)
-                    if (variance != null) stmt.setDouble(8, variance) else stmt.setNull(8, java.sql.Types.DOUBLE)
-                    if (p05 != null) stmt.setDouble(9, p05) else stmt.setNull(9, java.sql.Types.DOUBLE)
-                    if (p50 != null) stmt.setDouble(10, p50) else stmt.setNull(10, java.sql.Types.DOUBLE)
-                    if (p95 != null) stmt.setDouble(11, p95) else stmt.setNull(11, java.sql.Types.DOUBLE)
                     stmt.executeUpdate()
                 }
                 snapshotWritten = true
@@ -123,8 +108,8 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
         """.trimIndent()
 
         private val INSERT_SNAPSHOT_SQL = """
-            INSERT INTO tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost, prob_profit, variance, p05, p50, p95)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost)
+            VALUES (?, ?, ?, ?, ?, ?)
         """.trimIndent()
 
         /** Tolerance for idempotency comparisons (1e-9 ≈ sub-cent on dollar-scale figures). */
