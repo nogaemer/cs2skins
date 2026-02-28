@@ -259,11 +259,6 @@ object TradeupSnapshots : Table("tradeup_snapshots") {
     val profit = double("profit")
     val inputCost = double("input_cost")
     val outputCost = double("output_cost")
-    val probProfit = double("prob_profit").nullable()
-    val variance = double("variance").nullable()
-    val p05 = double("p05").nullable()
-    val p50 = double("p50").nullable()
-    val p95 = double("p95").nullable()
 
     // snapshotSeq makes the key unique; snapshotTime must be included to satisfy TimescaleDB's
     // requirement that all UNIQUE/PK constraints include the partition column.

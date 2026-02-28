@@ -102,26 +102,6 @@ class TradeUpController(
         return ResponseEntity.ok(history)
     }
 
-    /**
-     * Returns risk summary metrics for a trade-up over a time window.
-     *
-     * @param tradeupId  trade-up master id (path variable)
-     * @param from       start of range, epoch milliseconds (default: 30 days ago)
-     * @param to         end of range, epoch milliseconds (default: now)
-     */
-    @GetMapping("/{tradeupId}/risk")
-    suspend fun getTradeUpRisk(
-        @PathVariable tradeupId: Int,
-        @RequestParam(defaultValue = "0") from: Long,
-        @RequestParam(defaultValue = "0") to: Long,
-    ): ResponseEntity<TradeUpRiskSummaryResponse> {
-        val now = System.currentTimeMillis()
-        val toMs = if (to > 0L) to else now
-        val fromMs = if (from > 0L) from else now - 30L * 24 * 60 * 60 * 1000
-        val summary = tradeUpService.getTradeupRiskSummary(tradeupId, fromMs, toMs)
-        return ResponseEntity.ok(summary)
-    }
-
     @DeleteMapping
     suspend fun deleteAllTradeUps(): ResponseEntity<Map<String, Any>> {
         val count = tradeUpService.deleteAllTradeUps()
