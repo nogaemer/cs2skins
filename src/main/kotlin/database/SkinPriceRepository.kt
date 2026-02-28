@@ -117,8 +117,12 @@ class SkinPriceRepository : SkinPriceRepositoryInterface {
         sourceId?.let { query = query.andWhere { SkinPricesCurrent.sourceId eq it } }
         currencyId?.let { query = query.andWhere { SkinPricesCurrent.currencyId eq it } }
         // When both sourceId and currencyId are given the composite PK guarantees at most one row;
-        // otherwise multiple rows may exist (one per source/currency) and we return the first.
-        val row = if (sourceId != null && currencyId != null) query.singleOrNull() else query.firstOrNull()
+        // otherwise multiple rows may exist (one per source/currency) and we deterministically pick the most recently updated.
+        val row = if (sourceId != null && currencyId != null) {
+            query.singleOrNull()
+        } else {
+            query.orderBy(SkinPricesCurrent.updatedAt to SortOrder.DESC).firstOrNull()
+        }
         row ?: return@dbQuery null
         val wearById = loadWearConditions(listOf(wearId))
         rowToSkinPrice(row, wearById)
