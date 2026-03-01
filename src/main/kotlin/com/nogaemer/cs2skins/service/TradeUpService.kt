@@ -1108,10 +1108,23 @@ class TradeUpService(
         val roiCol       = if (useAggregate) "avg_roi" else "roi"
         val profitCol    = if (useAggregate) "avg_profit" else "profit"
 
+        // Use weighted averages when reading from the daily aggregate table so that
+        // each underlying sample contributes proportionally rather than each day
+        val roiExpr = if (useAggregate) {
+            "SUM(ts.$roiCol * ts.samples) / NULLIF(SUM(ts.samples), 0)"
+        } else {
+            "AVG(ts.$roiCol)"
+        }
+        val profitExpr = if (useAggregate) {
+            "SUM(ts.$profitCol * ts.samples) / NULLIF(SUM(ts.samples), 0)"
+        } else {
+            "AVG(ts.$profitCol)"
+        }
+
         val sql = """
             SELECT ts.tradeup_id,
-                   AVG(ts.$roiCol)    AS avg_roi,
-                   AVG(ts.$profitCol) AS avg_profit,
+                   $roiExpr       AS avg_roi,
+                   $profitExpr    AS avg_profit,
                    SUM(${if (useAggregate) "ts.samples" else "1"}) AS total_samples,
                    tm.stattrak,
                    tm.rarity_id,
