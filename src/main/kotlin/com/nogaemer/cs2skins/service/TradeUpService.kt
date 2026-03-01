@@ -942,9 +942,234 @@ class TradeUpService(
                     inputCost = rows.map { it[TradeupSnapshots.inputCost] }.takeIf { it.isNotEmpty() }?.average()
                         ?: 0.0,
                     outputCost = rows.map { it[TradeupSnapshots.outputCost] }.takeIf { it.isNotEmpty() }?.average()
-                        ?: 0.0
+                        ?: 0.0,
+                    samples = rows.size
                 )
             }
+    }
+
+    /**
+     * Returns daily-bucketed history for a trade-up by reading from the [tradeup_daily]
+     * continuous aggregate instead of the raw hypertable.
+     *
+     * This avoids full hypertable scans and should be preferred whenever
+     * the requested bucket width is >= 1 day (86 400 000 ms).
+     *
+     * @param tradeupId the trade-up master record id
+     * @param fromMs    start of time range (epoch milliseconds, inclusive)
+     * @param toMs      end of time range (epoch milliseconds, inclusive)
+     * @param limit     maximum number of daily buckets to return (capped at 10 000)
+     */
+    suspend fun getTradeupHistoryAggregate(
+        tradeupId: Int,
+        fromMs: Long,
+        toMs: Long,
+        limit: Int = 1_000
+    ): List<TradeUpHistoryPoint> = withContext(Dispatchers.IO) {
+        val fromTs = java.sql.Timestamp(fromMs)
+        val toTs   = java.sql.Timestamp(toMs)
+        val safeLimit = limit.coerceIn(1, 10_000)
+        jdbcTemplate.query(
+            """
+            SELECT EXTRACT(EPOCH FROM bucket)::BIGINT * 1000 AS bucket_ms,
+                   avg_roi,
+                   avg_profit,
+                   avg_input_cost,
+                   avg_output_cost,
+                   samples
+            FROM   tradeup_daily
+            WHERE  tradeup_id = ?
+              AND  bucket BETWEEN ? AND ?
+            ORDER  BY bucket ASC
+            LIMIT  ?
+            """.trimIndent(),
+            { rs, _ ->
+                TradeUpHistoryPoint(
+                    bucketStart = rs.getLong("bucket_ms"),
+                    roi         = rs.getDouble("avg_roi"),
+                    profit      = rs.getDouble("avg_profit"),
+                    inputCost   = rs.getDouble("avg_input_cost"),
+                    outputCost  = rs.getDouble("avg_output_cost"),
+                    samples     = rs.getInt("samples")
+                )
+            },
+            tradeupId, fromTs, toTs, safeLimit
+        )
+    }
+
+    /**
+     * Returns an aggregated risk summary for a trade-up over the given period.
+     *
+     * Risk metric columns ([probProfit], [variance], p05/p50/p95) are null in the
+     * result when no snapshot in the window carries risk-metric data (the columns
+     * were added by migration 006 and are optional).
+     *
+     * @param tradeupId the trade-up master record id
+     * @param fromMs    start of time range (epoch milliseconds, inclusive)
+     * @param toMs      end of time range (epoch milliseconds, inclusive)
+     */
+    suspend fun getTradeupRisk(
+        tradeupId: Int,
+        fromMs: Long,
+        toMs: Long
+    ): TradeUpRiskResponse = withContext(Dispatchers.IO) {
+        val fromTs = java.sql.Timestamp(fromMs)
+        val toTs   = java.sql.Timestamp(toMs)
+        jdbcTemplate.queryForObject(
+            """
+            SELECT COUNT(*)            AS samples,
+                   AVG(roi)            AS avg_roi,
+                   AVG(prob_profit)    AS avg_prob_profit,
+                   AVG(variance)       AS avg_variance,
+                   AVG(p05)            AS avg_p05,
+                   AVG(p50)            AS avg_p50,
+                   AVG(p95)            AS avg_p95
+            FROM   tradeup_snapshots
+            WHERE  tradeup_id    = ?
+              AND  snapshot_time BETWEEN ? AND ?
+            """.trimIndent(),
+            { rs, _ ->
+                TradeUpRiskResponse(
+                    tradeupId   = tradeupId,
+                    from        = fromMs,
+                    to          = toMs,
+                    avgRoi      = rs.getDouble("avg_roi"),
+                    samples     = rs.getLong("samples"),
+                    probProfit  = rs.getDouble("avg_prob_profit").takeUnless { rs.wasNull() },
+                    variance    = rs.getDouble("avg_variance").takeUnless    { rs.wasNull() },
+                    p05         = rs.getDouble("avg_p05").takeUnless         { rs.wasNull() },
+                    p50         = rs.getDouble("avg_p50").takeUnless         { rs.wasNull() },
+                    p95         = rs.getDouble("avg_p95").takeUnless         { rs.wasNull() }
+                )
+            },
+            tradeupId, fromTs, toTs
+        ) ?: TradeUpRiskResponse(
+            tradeupId  = tradeupId,
+            from       = fromMs,
+            to         = toMs,
+            avgRoi     = 0.0,
+            samples    = 0L,
+            probProfit = null,
+            variance   = null,
+            p05        = null,
+            p50        = null,
+            p95        = null
+        )
+    }
+
+    /**
+     * Returns the top-N trade-ups ranked by average ROI or profit within a time window.
+     *
+     * When [bucket] is "day", results are read from the [tradeup_daily] continuous aggregate
+     * (fast, index-only scan).  Any other bucket value falls back to aggregating raw
+     * snapshots via a time-range scan on the hypertable.
+     *
+     * Optional filters narrow the result set by stattrak flag, rarity, or collections.
+     *
+     * @param fromMs      start of time window (epoch milliseconds, inclusive)
+     * @param toMs        end of time window (epoch milliseconds, inclusive)
+     * @param limit       maximum number of results (capped at 200)
+     * @param sortBy      "roi" or "profit" (defaults to "roi")
+     * @param bucket      "day" to use the continuous aggregate; anything else uses raw snapshots
+     * @param stattrak    optional filter for StatTrak tradeups
+     * @param rarity      optional rarity_id filter
+     * @param collections optional comma-separated collection IDs to filter by
+     */
+    suspend fun getTopTradeups(
+        fromMs: Long,
+        toMs: Long,
+        limit: Int = 10,
+        sortBy: String = "roi",
+        bucket: String = "day",
+        stattrak: Boolean? = null,
+        rarity: String? = null,
+        collections: String? = null
+    ): TopTradeupResponse = withContext(Dispatchers.IO) {
+        val safeLimit  = limit.coerceIn(1, 200)
+        val orderCol   = if (sortBy == "profit") "avg_profit" else "avg_roi"
+        val fromTs     = java.sql.Timestamp(fromMs)
+        val toTs       = java.sql.Timestamp(toMs)
+        val collList   = collections
+            ?.split(',')
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            ?.takeIf { it.isNotEmpty() }
+
+        // Build the collection filter clause using IN (?,?) to avoid SQL Array objects
+        val collClause = if (collList != null) {
+            val ph = collList.joinToString(",") { "?" }
+            "AND (tm.collection_a_id IN ($ph) OR tm.collection_b_id IN ($ph))"
+        } else ""
+
+        // Choose the time-series source based on bucket value
+        val useAggregate = (bucket == "day")
+        val timeSource   = if (useAggregate) "tradeup_daily" else "tradeup_snapshots"
+        val timeCol      = if (useAggregate) "bucket" else "snapshot_time"
+        val roiCol       = if (useAggregate) "avg_roi" else "roi"
+        val profitCol    = if (useAggregate) "avg_profit" else "profit"
+
+        // Use weighted averages when reading from the daily aggregate table so that
+        // each underlying sample contributes proportionally rather than each day
+        val roiExpr = if (useAggregate) {
+            "SUM(ts.$roiCol * ts.samples) / NULLIF(SUM(ts.samples), 0)"
+        } else {
+            "AVG(ts.$roiCol)"
+        }
+        val profitExpr = if (useAggregate) {
+            "SUM(ts.$profitCol * ts.samples) / NULLIF(SUM(ts.samples), 0)"
+        } else {
+            "AVG(ts.$profitCol)"
+        }
+
+        val sql = """
+            SELECT ts.tradeup_id,
+                   $roiExpr       AS avg_roi,
+                   $profitExpr    AS avg_profit,
+                   SUM(${if (useAggregate) "ts.samples" else "1"}) AS total_samples,
+                   tm.stattrak,
+                   tm.rarity_id,
+                   r.name             AS rarity_name
+            FROM   $timeSource ts
+            JOIN   tradeups_master tm ON tm.id = ts.tradeup_id
+            LEFT   JOIN rarities r   ON r.rarity_id = tm.rarity_id
+            WHERE  ts.$timeCol BETWEEN ? AND ?
+              ${if (stattrak != null) "AND tm.stattrak = ?" else ""}
+              ${if (rarity != null)   "AND tm.rarity_id = ?" else ""}
+              $collClause
+            GROUP  BY ts.tradeup_id, tm.stattrak, tm.rarity_id, r.name
+            ORDER  BY $orderCol DESC
+            LIMIT  ?
+        """.trimIndent()
+
+        // Build parameter list dynamically to match the ? placeholders
+        val params = mutableListOf<Any>(fromTs, toTs)
+        if (stattrak != null) params += stattrak
+        if (rarity   != null) params += rarity
+        if (collList != null) {
+            collList.forEach { params += it }   // collection_a_id IN (...)
+            collList.forEach { params += it }   // collection_b_id IN (...)
+        }
+        params += safeLimit
+
+        val entries = jdbcTemplate.query(sql, { rs, _ ->
+            TopTradeupEntry(
+                tradeupId  = rs.getInt("tradeup_id"),
+                avgRoi     = rs.getDouble("avg_roi"),
+                avgProfit  = rs.getDouble("avg_profit"),
+                samples    = rs.getLong("total_samples"),
+                stattrak   = rs.getBoolean("stattrak"),
+                rarityId   = rs.getString("rarity_id"),
+                rarityName = rs.getString("rarity_name")
+            )
+        }, *params.toTypedArray())
+
+        TopTradeupResponse(
+            tradeups = entries,
+            from     = fromMs,
+            to       = toMs,
+            bucket   = bucket,
+            source   = if (useAggregate) "aggregate" else "raw"
+        )
     }
 
     /**
