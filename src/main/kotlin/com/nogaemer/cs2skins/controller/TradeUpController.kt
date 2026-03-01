@@ -103,8 +103,10 @@ class TradeUpController(
         val clampedMax = maxPoints.coerceIn(1, 10_000)
         val effectiveFrom = maxOf(rawFrom, toMs - safeBucket * clampedMax)
 
-        val history = if (safeBucket >= ONE_DAY_MS) {
-            // Use continuous aggregate for daily (or coarser) buckets
+        val history = if (safeBucket == ONE_DAY_MS) {
+            // Use continuous aggregate only for exact 1-day buckets; coarser
+            // widths (e.g. 7d, 30d) fall back to raw snapshots so the caller's
+            // requested bucket width is applied correctly in-application.
             tradeUpService.getTradeupHistoryAggregate(id, effectiveFrom, toMs, clampedMax)
         } else {
             tradeUpService.getTradeupHistory(id, effectiveFrom, toMs, safeBucket)

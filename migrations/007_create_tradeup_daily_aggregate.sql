@@ -7,12 +7,12 @@
 -- per trade-up from tradeup_snapshots.
 --
 -- This aggregate is used by:
---   GET /api/tradeups/{id}/history  (when bucket >= 1 day)
+--   GET /api/tradeups/{id}/history  (when bucket == 1 day exactly)
 --   GET /api/tradeups/top           (when bucket=day)
 --
 -- When to use the aggregate vs. raw data:
---   • bucket >= 1 day  → read from tradeup_daily (fast, indexed)
---   • bucket < 1 day   → fall back to raw tradeup_snapshots
+--   • bucket == 1 day  → read from tradeup_daily (fast, indexed)
+--   • bucket != 1 day  → fall back to raw tradeup_snapshots
 --
 -- The refresh policy re-materialises data once per hour,
 -- covering a window from 3 days ago up to 1 hour ago.  This

@@ -46,6 +46,15 @@ SELECT add_continuous_aggregate_policy(
     if_not_exists     => TRUE
 );
 
+-- ── Initial backfill ─────────────────────────────────────────
+-- Populate the last 30 days so price-history queries have data
+-- immediately without waiting for the rolling policy window.
+SELECT refresh_continuous_aggregate(
+    'skin_price_daily',
+    now() - INTERVAL '30 days',
+    now() - INTERVAL '1 hour'
+);
+
 -- ── Indexes ───────────────────────────────────────────────────
 -- idx_spd_skin_bucket: per-skin daily price history
 --   WHERE skin_id = ? AND wear_id = ? AND bucket BETWEEN ? AND ?

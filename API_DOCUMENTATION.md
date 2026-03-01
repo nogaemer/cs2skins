@@ -461,13 +461,14 @@ Returns a time-bucketed series of ROI/profit snapshots for a specific trade-up.
 |-------------|---------|----------------|----------------------------------------------------------------------------------------------------------------|
 | `from`      | long    | 30 days ago    | Start of time range as epoch milliseconds (e.g. `1700000000000`)                                              |
 | `to`        | long    | now            | End of time range as epoch milliseconds                                                                        |
-| `bucket`    | long    | `86400000`     | Bucket width in milliseconds. **≥ 86400000 (1 day) → reads from the `tradeup_daily` continuous aggregate (fast). < 1 day → reads raw `tradeup_snapshots` hypertable.** |
+| `bucket`    | long    | `86400000`     | Bucket width in milliseconds. **= 86400000 (exactly 1 day) → reads from the `tradeup_daily` continuous aggregate (fast). Any other value → reads raw `tradeup_snapshots` hypertable.** |
 | `maxPoints` | integer | `1000`         | Maximum number of buckets to return (clamped to 1–10000). The effective `from` is adjusted so at most this many points are produced. |
 
 > **Aggregate vs. raw data:**  
-> When `bucket >= 86400000` (1 day) the API reads from the pre-materialised `tradeup_daily`
-> view for fast, index-only access. For sub-day buckets it falls back to scanning raw
-> `tradeup_snapshots` within the requested time range.
+> When `bucket == 86400000` (exactly 1 day) the API reads from the pre-materialised `tradeup_daily`
+> view for fast, index-only access. For all other bucket widths (both sub-day and coarser) it
+> falls back to scanning raw `tradeup_snapshots` within the requested time range so the requested
+> bucket width is applied correctly.
 
 **Example request (daily, last 7 days):**
 ```
