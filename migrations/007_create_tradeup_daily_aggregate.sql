@@ -48,6 +48,13 @@ SELECT add_continuous_aggregate_policy(
     if_not_exists     => TRUE
 );
 
+-- ── Initial backfill ─────────────────────────────────────────
+-- Populate the last 30 days so default history queries have data
+SELECT refresh_continuous_aggregate(
+    'tradeup_daily',
+    now() - INTERVAL '30 days',
+    now() - INTERVAL '1 hour'
+);
 -- ── Indexes ───────────────────────────────────────────────────
 -- idx_td_tradeup_bucket: supports per-trade-up history queries
 --   WHERE tradeup_id = ? AND bucket BETWEEN ? AND ?
