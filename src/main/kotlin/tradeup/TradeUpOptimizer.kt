@@ -87,7 +87,7 @@ class TradeUpOptimizer(
 
                             val tradeUpInput: CostsFloatInput? =
                                 TradeUpInput(tradeUpInputComponentA, tradeUpInputComponentB)
-                                    .calculateBestFloats(outputFloat).values.minByOrNull { it.costs }
+                                    .calculateBestFloats(outputFloat).values.minByOrNull { it.costsWithDropChange }
 
                             if (tradeUpInput != null &&
                                 (tradeUpInput.costsWithDropChange < (bestTradeUpInputForOutputFloat?.costsFloatInput?.costsWithDropChange

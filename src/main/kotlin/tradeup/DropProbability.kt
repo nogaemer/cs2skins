@@ -4,8 +4,7 @@ import models.CSWear
 import models.Skin
 
 class DropProbability(
-    tradeUpInputComponentA: TradeUpInputComponent,
-    tradeUpInputComponentB: TradeUpInputComponent
+    tradeUpInputComponentA: TradeUpInputComponent, tradeUpInputComponentB: TradeUpInputComponent
 ) {
 
     companion object {
@@ -20,24 +19,27 @@ class DropProbability(
 
         fun calculateBSummand(
             avgFloat: Double,
+            tradeUpInputComponentA: TradeUpInputComponent,
             tradeUpInputComponentB: TradeUpInputComponent,
         ): Double {
-            return avgFloat * 10.0 * tradeUpInputComponentB.skin.floatCapDifference / tradeUpInputComponentB.amount.toDouble()
+            return (tradeUpInputComponentB.skin.minFloatCap +
+                    (tradeUpInputComponentB.skin.floatCapDifference / tradeUpInputComponentB.amount.toDouble()) *
+                    (avgFloat * 10.0 + (tradeUpInputComponentA.amount.toDouble() * tradeUpInputComponentA.skin.minFloatCap) / tradeUpInputComponentA.skin.floatCapDifference))
+
         }
     }
 
     data class FloatProbabilityPoint(val float: Double, val probability: Double)
     data class FloatProbabilityPointPair(
-        val lower: FloatProbabilityPoint,
-        val upper: FloatProbabilityPoint,
-        val floatDifference: Double
+        var lower: FloatProbabilityPoint, var upper: FloatProbabilityPoint, var floatDifference: Double
     ) {
+
+
         override fun toString(): String = "\nFloatProbabilityPointPair(\n\tlower=$lower,\n\tupper=$upper\n)"
     }
 
     fun calculateMMultiplier(
-        skinAmountA: Int,
-        skinAmountB: Int
+        skinAmountA: Int, skinAmountB: Int
     ): Double {
         require(skinAmountA != 0) { "skinAmountA must not be zero" }
         return -skinAmountA.toDouble() / skinAmountB.toDouble()
@@ -64,9 +66,7 @@ class DropProbability(
         val b = pMin + m * -xLow
 
         return ProbabilityLinear(
-            m,
-            b,
-            pointPair
+            m, b, pointPair
         )
     }
 
@@ -127,6 +127,7 @@ class DropProbability(
     val SkinBFloatDifference = SkinBFloatMax - SkinBFloatMin
     val SkinBFloatblockMWMinPercentage = 0.0      // 0%
     val SkinBFloatblockMWMaxPercentage = 0.4585   // 45.85%
+
 
     // A: MW over [0.08*ΔA, 0.15*ΔA]
 //    val probA = probabilityLinear(

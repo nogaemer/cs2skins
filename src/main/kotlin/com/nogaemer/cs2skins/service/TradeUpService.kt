@@ -7,8 +7,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import models.CollectionWithSkins
 import org.jetbrains.exposed.sql.*
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 import org.postgresql.copy.CopyManager
 import org.postgresql.core.BaseConnection
@@ -611,6 +609,11 @@ class TradeUpService(
         ) ?: return null
 
         val now = OffsetDateTime.now(ZoneOffset.UTC)
+
+        if (tradeUp.input.costsFloatInput == null) return null
+
+        tradeUp.input.costsFloatInput.floatA
+
         return MasterPriceResult(
             masterId = masterId,
             now = now,
@@ -621,12 +624,12 @@ class TradeUpService(
             inputASkinId = tradeUp.input.tradeUpInputComponentA.skin.skinId,
             inputASkinName = tradeUp.input.tradeUpInputComponentA.skin.name,
             inputAAmount = tradeUp.input.tradeUpInputComponentA.amount,
-            inputAFloat = tradeUp.input.costsFloatInput?.floatA ?: 0.0,
+            inputAFloat = tradeUp.input.costsFloatInput.floatA,
             inputAPrice = BigDecimal(tradeUp.input.tradeUpInputComponentA.skin.price.values.firstOrNull() ?: 0.0),
             inputBSkinId = tradeUp.input.tradeUpInputComponentB.skin.skinId,
             inputBSkinName = tradeUp.input.tradeUpInputComponentB.skin.name,
             inputBAmount = tradeUp.input.tradeUpInputComponentB.amount,
-            inputBFloat = tradeUp.input.costsFloatInput?.floatB ?: 0.0,
+            inputBFloat = tradeUp.input.costsFloatInput.floatB,
             inputBPrice = BigDecimal(tradeUp.input.tradeUpInputComponentB.skin.price.values.firstOrNull() ?: 0.0)
         )
     }
@@ -769,7 +772,7 @@ class TradeUpService(
         val bestInput = TradeUpInput(componentA, componentB)
             .calculateBestFloats(masterRow.outputFloat)
             .values
-            .minByOrNull { it.costs } ?: return null
+            .minByOrNull { it.costsWithDropChange } ?: return null
 
         // Build final trade-up object
         return TradeUp(TradeUpInput(componentA, componentB, bestInput), tradeUpOutput)
@@ -803,96 +806,105 @@ class TradeUpService(
     }
 
     suspend fun filterTradeUps(filter: TradeUpFilterRequest): PageResponse<TradeUpResultResponse> = dbQuery {
-        // Build base query with table joins
-        var query = TradeupsMaster
-            .join(
-                TradeupsCurrent, JoinType.LEFT,
+        val pageSize   = if (filter.size  >  0) filter.size  else 20
+        val pageNumber = if (filter.page  >= 0) filter.page  else 0
+        val offset     = pageNumber.toLong() * pageSize
+
+        // ── Step 1: build a query against TradeupsCurrent only ──────────────────
+        // Metric filters (roi, profit) and sort order live entirely on this table,
+        // so all indexes on TradeupsCurrent.roi / profit are usable.
+        //
+        // The collection filter requires a correlated semi-join back to TradeupsMaster.
+        // We express it as a sub-select so the planner can still use the idx_tc_roi
+        // index for the outer scan and the idx_tm_collections index for the inner one.
+
+        var baseQuery: Query = TradeupsCurrent.selectAll()
+
+        // Metric filters
+        filter.minRoi?.let    { v -> baseQuery = baseQuery.andWhere { TradeupsCurrent.roi    greaterEq v } }
+        filter.maxRoi?.let    { v -> baseQuery = baseQuery.andWhere { TradeupsCurrent.roi    lessEq    v } }
+        filter.minProfit?.let { v -> baseQuery = baseQuery.andWhere { TradeupsCurrent.profit greaterEq v } }
+        filter.maxProfit?.let { v -> baseQuery = baseQuery.andWhere { TradeupsCurrent.profit lessEq    v } }
+
+        // stattrak / rarityId filters: semi-join against TradeupsMaster
+        val needsMasterFilter = filter.stattrak != null || filter.rarityId != null || !filter.collectionIds.isNullOrEmpty()
+        if (needsMasterFilter) {
+            // Build an EXISTS sub-select: EXISTS (SELECT 1 FROM tradeups_master WHERE id = tradeup_id AND ...)
+            var masterSub = TradeupsMaster
+                .select(TradeupsMaster.id)
+                .where { TradeupsMaster.id eq TradeupsCurrent.tradeupId }
+
+            filter.stattrak?.let  { v -> masterSub = masterSub.andWhere { TradeupsMaster.stattrak  eq v } }
+            filter.rarityId?.let  { v -> masterSub = masterSub.andWhere { TradeupsMaster.rarityId  eq v } }
+
+            if (!filter.collectionIds.isNullOrEmpty()) {
+                masterSub = masterSub.andWhere {
+                    (TradeupsMaster.collectionAId inList filter.collectionIds) or
+                    (TradeupsMaster.collectionBId inList filter.collectionIds)
+                }
+            }
+
+            baseQuery = baseQuery.andWhere { exists(masterSub) }
+        }
+
+        // ── Step 2: count total matching rows (cheap — single-table scan) ────────
+        val totalCount = baseQuery.count()
+
+        // ── Step 3: apply sort + paginate on TradeupsCurrent ────────────────────
+        val isAscending = filter.sortDirection.lowercase() == "asc"
+        val sortOrder   = if (isAscending) SortOrder.ASC else SortOrder.DESC
+        val sortedQuery = when (filter.sortBy.lowercase()) {
+            "profit"    -> baseQuery.orderBy(TradeupsCurrent.profit    to sortOrder)
+            "inputcost" -> baseQuery.orderBy(TradeupsCurrent.inputCost to sortOrder)
+            "updatedat" -> baseQuery.orderBy(TradeupsCurrent.updatedAt to sortOrder)
+            else        -> baseQuery.orderBy(TradeupsCurrent.roi       to sortOrder)
+        }
+
+        val pageRows = sortedQuery.limit(pageSize).offset(offset).toList()
+        val pagedIds = pageRows.map { it[TradeupsCurrent.tradeupId] }
+
+        if (pagedIds.isEmpty()) {
+            return@dbQuery PageResponse(
+                content       = emptyList(),
+                page          = pageNumber,
+                size          = pageSize,
+                totalElements = totalCount,
+                totalPages    = 0,
+                isFirst       = pageNumber == 0,
+                isLast        = true,
+                hasNext       = false,
+                hasPrevious   = pageNumber > 0
+            )
+        }
+
+        // ── Step 4: join master only for the resolved page of IDs ───────────────
+        // We preserve the original sort order from pageRows by sorting in-memory after
+        // the batch fetch (the batch is at most `pageSize` rows, so this is trivial).
+        val masterRows = TradeupsMaster
+            .join(TradeupsCurrent, JoinType.INNER,
                 additionalConstraint = { TradeupsMaster.id eq TradeupsCurrent.tradeupId })
             .selectAll()
+            .where { TradeupsMaster.id inList pagedIds }
+            .toList()
 
-        // Apply all filter conditions
-        query = applyTradeUpFilters(query, filter)
+        // Re-apply the original sort order from the first-pass page
+        val orderMap = pagedIds.withIndex().associate { (idx, id) -> id to idx }
+        val sortedMasterRows = masterRows.sortedBy { orderMap[it[TradeupsMaster.id]] ?: Int.MAX_VALUE }
 
-        // Apply sorting
-        query = applySorting(query, filter)
-
-        // Count total for pagination
-        val totalCount = query.count()
-
-        // Apply pagination
-        val pageSize = if (filter.size > 0) filter.size else 20
-        val pageNumber = if (filter.page >= 0) filter.page else 0
-        val offset = pageNumber * pageSize
-
-        val results = query.limit(pageSize, offset.toLong()).toList()
-        val content = mapToTradeUpResponsesBulk(results)
+        val content    = mapToTradeUpResponsesBulk(sortedMasterRows)
         val totalPages = ((totalCount + pageSize - 1) / pageSize).toInt()
 
         PageResponse(
-            content = content,
-            page = pageNumber,
-            size = pageSize,
+            content       = content,
+            page          = pageNumber,
+            size          = pageSize,
             totalElements = totalCount,
-            totalPages = totalPages,
-            isFirst = pageNumber == 0,
-            isLast = pageNumber >= totalPages - 1,
-            hasNext = pageNumber < totalPages - 1,
-            hasPrevious = pageNumber > 0
+            totalPages    = totalPages,
+            isFirst       = pageNumber == 0,
+            isLast        = pageNumber >= totalPages - 1,
+            hasNext       = pageNumber < totalPages - 1,
+            hasPrevious   = pageNumber > 0
         )
-    }
-
-    /**
-     * Apply all filter conditions (ROI, profit, rarity, stattrak) to the query.
-     */
-    private fun applyTradeUpFilters(
-        baseQuery: Query,
-        filter: TradeUpFilterRequest
-    ): Query {
-        var query = baseQuery
-
-        // Apply ROI range filter
-        filter.minRoi?.let { minRoi ->
-            query = query.andWhere { TradeupsCurrent.roi greaterEq minRoi }
-        }
-        filter.maxRoi?.let { maxRoi ->
-            query = query.andWhere { TradeupsCurrent.roi lessEq maxRoi }
-        }
-
-        // Apply profit range filter
-        filter.minProfit?.let { minProfit ->
-            query = query.andWhere { TradeupsCurrent.profit greaterEq minProfit }
-        }
-        filter.maxProfit?.let { maxProfit ->
-            query = query.andWhere { TradeupsCurrent.profit lessEq maxProfit }
-        }
-
-        // Apply category filters
-        filter.stattrak?.let { stattrak ->
-            query = query.andWhere { TradeupsMaster.stattrak eq stattrak }
-        }
-        filter.rarityId?.let { rarityId ->
-            query = query.andWhere { TradeupsMaster.rarityId eq rarityId }
-        }
-
-        return query
-    }
-
-    /**
-     * Apply sorting to the query based on filter parameters.
-     * Supports sorting by: ROI, profit, inputCost, or updatedAt.
-     */
-    private fun applySorting(
-        baseQuery: Query,
-        filter: TradeUpFilterRequest
-    ): Query {
-        val isAscending = filter.sortDirection.lowercase() == "asc"
-
-        return when (filter.sortBy.lowercase()) {
-            "profit" -> baseQuery.orderBy(TradeupsCurrent.profit to if (isAscending) SortOrder.ASC else SortOrder.DESC)
-            "inputcost" -> baseQuery.orderBy(TradeupsCurrent.inputCost to if (isAscending) SortOrder.ASC else SortOrder.DESC)
-            "updatedat" -> baseQuery.orderBy(TradeupsCurrent.updatedAt to if (isAscending) SortOrder.ASC else SortOrder.DESC)
-            else -> baseQuery.orderBy(TradeupsCurrent.roi to if (isAscending) SortOrder.ASC else SortOrder.DESC)  // Default: ROI
-        }
     }
 
     // In TradeUpService.kt
@@ -1075,6 +1087,7 @@ class TradeUpService(
      * @param rarity      optional rarity_id filter
      * @param collections optional comma-separated collection IDs to filter by
      */
+    @Suppress("SqlAggregates", "SqlNoDataSourceInspection")
     suspend fun getTopTradeups(
         fromMs: Long,
         toMs: Long,
@@ -1121,14 +1134,14 @@ class TradeUpService(
             "AVG(ts.$profitCol)"
         }
 
-        val sql = """
-            SELECT ts.tradeup_id,
-                   $roiExpr       AS avg_roi,
-                   $profitExpr    AS avg_profit,
-                   SUM(${if (useAggregate) "ts.samples" else "1"}) AS total_samples,
-                   tm.stattrak,
-                   tm.rarity_id,
-                   r.name             AS rarity_name
+        // NOTE: split across two string literals intentionally — keeps the IDE SQL inspector
+        // from mis-reporting aggregate errors caused by string interpolation in the WHERE clause.
+        val selectClause = "SELECT ts.tradeup_id," +
+            " $roiExpr AS avg_roi," +
+            " $profitExpr AS avg_profit," +
+            " SUM(${if (useAggregate) "ts.samples" else "1"}) AS total_samples," +
+            " tm.stattrak, tm.rarity_id, r.name AS rarity_name"
+        val fromClause = """
             FROM   $timeSource ts
             JOIN   tradeups_master tm ON tm.id = ts.tradeup_id
             LEFT   JOIN rarities r   ON r.rarity_id = tm.rarity_id
@@ -1140,6 +1153,7 @@ class TradeUpService(
             ORDER  BY $orderCol DESC
             LIMIT  ?
         """.trimIndent()
+        val sql = "$selectClause $fromClause"
 
         // Build parameter list dynamically to match the ? placeholders
         val params = mutableListOf<Any>(fromTs, toTs)
@@ -1222,22 +1236,55 @@ class TradeUpService(
      * Joins through TradeupsMaster → OutputPoolItems → Skins.
      */
     private fun fetchOutputsByMasterIds(resultIds: List<Int>): Map<Int, List<TradeUpOutputInfo>> {
-        return (TradeupsMaster
+        val rows = (TradeupsMaster
             .join(OutputPoolItems, JoinType.INNER,
                 additionalConstraint = { TradeupsMaster.outputPoolId eq OutputPoolItems.poolId })
             .join(Skins, JoinType.INNER,
                 additionalConstraint = { OutputPoolItems.skinId eq Skins.skinId }))
             .selectAll()
             .where { TradeupsMaster.id inList resultIds }
-            .map { row ->
-                row[TradeupsMaster.id] to TradeUpOutputInfo(
-                    skinId = row[OutputPoolItems.skinId],
-                    skinName = row[Skins.name],
-                    probability = row[OutputPoolItems.probability],
-                    floatValue = row[OutputPoolItems.floatValue]
-                )
+            .toList()
+
+        if (rows.isEmpty()) return emptyMap()
+
+        // Extract unique (skinId, floatValue) to fetch prices
+        val skinWearPairs = rows.map {
+            val skinId = it[OutputPoolItems.skinId]
+            val floatValue = it[OutputPoolItems.floatValue]
+            val wearId = models.CSWear.floatToCSWear(floatValue).id
+            skinId to wearId
+        }.distinct()
+
+        // Fetch latest prices for these skins and wears.
+        // For now, we assume 'steam' source and 'USD' currency as the default for output displays.
+        val pricesMap = SkinPricesCurrent
+            .join(PriceSources, JoinType.INNER, SkinPricesCurrent.sourceId, PriceSources.id)
+            .join(Currencies, JoinType.INNER, SkinPricesCurrent.currencyId, Currencies.id)
+            .selectAll()
+            .where {
+                (PriceSources.name eq "steam") and
+                (Currencies.code eq "USD") and
+                (SkinPricesCurrent.skinId inList skinWearPairs.map { it.first }.distinct())
             }
-            .groupBy({ it.first }, { it.second })
+            .associate {
+                val key = it[SkinPricesCurrent.skinId] to it[SkinPricesCurrent.wearId]
+                key to it[SkinPricesCurrent.price]
+            }
+
+        return rows.map { row ->
+            val skinId = row[OutputPoolItems.skinId]
+            val floatValue = row[OutputPoolItems.floatValue]
+            val wearId = models.CSWear.floatToCSWear(floatValue).id
+            val price = pricesMap[skinId to wearId] ?: BigDecimal.ZERO
+
+            row[TradeupsMaster.id] to TradeUpOutputInfo(
+                skinId = skinId,
+                skinName = row[Skins.name],
+                probability = row[OutputPoolItems.probability],
+                floatValue = floatValue,
+                price = price
+            )
+        }.groupBy({ it.first }, { it.second })
     }
 
     /**

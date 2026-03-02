@@ -1,5 +1,9 @@
 package com.nogaemer.cs2skins.dto
 
+import com.fasterxml.jackson.core.JsonParser
+import com.fasterxml.jackson.databind.DeserializationContext
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize
+import com.fasterxml.jackson.databind.deser.std.StdDeserializer
 import java.math.BigDecimal
 import java.time.OffsetDateTime
 
@@ -24,6 +28,18 @@ data class SkinResponse(
 data class PriceInfo(
     val price: BigDecimal,
     val quantity: Int
+)
+
+data class WeaponResponse(
+    val weaponId: String,
+    val name: String,
+    val image: String?
+)
+
+data class RarityResponse(
+    val rarityId: String,
+    val name: String,
+    val colorHex: String?
 )
 
 data class CollectionResponse(
@@ -79,7 +95,8 @@ data class TradeUpOutputInfo(
     val skinId: String,
     val skinName: String,
     val probability: Double,
-    val floatValue: Double
+    val floatValue: Double,
+    val price: BigDecimal
 )
 
 data class JobStatusResponse(
@@ -88,13 +105,18 @@ data class JobStatusResponse(
 )
 
 // Filter/Query DTOs
+
 data class SkinFilterRequest(
+    @JsonDeserialize(using = EmptyStringAsNullDeserializer::class)
     val weaponId: String? = null,
+    @JsonDeserialize(using = EmptyStringAsNullDeserializer::class)
     val rarityId: String? = null,
+    @JsonDeserialize(using = EmptyStringAsNullDeserializer::class)
     val collectionId: String? = null,
     val stattrak: Boolean? = null,
     val minPrice: BigDecimal? = null,
     val maxPrice: BigDecimal? = null,
+    @JsonDeserialize(using = EmptyStringAsNullDeserializer::class)
     val searchTerm: String? = null
 )
 
@@ -104,7 +126,10 @@ data class TradeUpFilterRequest(
     val minProfit: Double? = null,
     val maxProfit: Double? = null,
     val stattrak: Boolean? = null,
+    @JsonDeserialize(using = EmptyStringAsNullDeserializer::class)
     val rarityId: String? = null,
+    /** Filter to tradeups that contain ANY of these collection IDs (checks both collectionA and collectionB). */
+    val collectionIds: List<String>? = null,
     val sortBy: String = "roi", // roi, profit, inputCost, updatedAt
     val sortDirection: String = "desc", // asc, desc
     val page: Int = 0, // Page number (0-indexed)
@@ -234,3 +259,11 @@ data class BucketedPriceResponse(
     val minPrice: BigDecimal,
     val maxPrice: BigDecimal
 )
+
+
+class EmptyStringAsNullDeserializer : StdDeserializer<String?>(String::class.java) {
+    override fun deserialize(p: JsonParser, ctxt: DeserializationContext): String? {
+        val value = p.valueAsString
+        return if (value.isEmpty()) null else value
+    }
+}

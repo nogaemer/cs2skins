@@ -30,8 +30,8 @@ class TradeUpInput(
 
             CSWear.entries.forEach { wearSkinB ->
                 val dropProbabilityListB = dropProbabilityListMapB[wearSkinB] ?: emptyList()
-                val priceA = tradeUpInputComponentA.skin.price[wearSkinA]?.takeIf { it != 0.0 } ?: return@forEach
-                val priceB = tradeUpInputComponentB.skin.price[wearSkinB]?.takeIf { it != 0.0 } ?: return@forEach
+                val priceA = tradeUpInputComponentA.skin.price[wearSkinA]?.takeIf { it > 0.0 } ?: return@forEach
+                val priceB = tradeUpInputComponentB.skin.price[wearSkinB]?.takeIf { it > 0.0 } ?: return@forEach
 
                 dropProbabilityListA.forEach { dropProbabilityA ->
 
@@ -46,6 +46,10 @@ class TradeUpInput(
                     val constA = tradeUpInputComponentA.amount * priceA * slopeA
 
                     dropProbabilityListB.forEach { dropProbabilityB ->
+                        if (wearSkinA == CSWear.FACTORY_NEW && wearSkinB == CSWear.MINIMAL_WEAR) {
+                            println("Debug: wearSkinA = ${wearSkinA.displayName}, wearSkinB = ${wearSkinB.displayName}")
+                        }
+
                         // Skip if the linear segments have no overlap on the x-axis.
                         if (dropProbabilityA.minXRange > dropProbabilityB.maxXRange) return@forEach
                         if (dropProbabilityA.maxXRange < dropProbabilityB.minXRange) return@forEach
@@ -93,27 +97,42 @@ class TradeUpInput(
 
                         // finalPrice(x) = amountA * priceIncA + amountB * priceIncB
                         val finalPrice = tradeUpInputComponentA.amount * priceA + tradeUpInputComponentB.amount * priceB
-                        val finalPriceWithDropChange = tradeUpInputComponentA.amount * priceIncA + tradeUpInputComponentB.amount * priceIncB
+                        val finalPriceWithDropChange =
+                            tradeUpInputComponentA.amount * priceIncA + tradeUpInputComponentB.amount * priceIncB
+
+                        if (floatAtLowestPrice == 0.021452408554115635){
+                            println("Debug: wearSkinA = ${wearSkinA.displayName}, wearSkinB = ${wearSkinB.displayName}, floatAtLowestPrice = $floatAtLowestPrice, priceIncA = $priceIncA, priceIncB = $priceIncB, finalPrice = $finalPrice, finalPriceWithDropChange = $finalPriceWithDropChange")
+                        }
+
+                        val costFloatInput = CostsFloatInput(
+                            finalPriceWithDropChange,
+                            finalPrice,
+                            floatA = floatAtLowestPrice,
+                            floatB = (
+                                    (avgFloat * 10.0
+                                            - tradeUpInputComponentA.amount * ((floatAtLowestPrice - tradeUpInputComponentA.skin.minFloatCap)
+                                            / tradeUpInputComponentA.skin.floatCapDifference)) / tradeUpInputComponentB.amount)
+                                    * tradeUpInputComponentB.skin.floatCapDifference
+                                    + tradeUpInputComponentB.skin.minFloatCap
+
+                        )
+
+                        if ((tradeUpInputComponentA.skin.price[CSWear.floatToCSWear(costFloatInput.floatA)]
+                                ?: 0.0) <= 0.0
+                        ) return@forEach
+
+                        if ((tradeUpInputComponentB.skin.price[CSWear.floatToCSWear(costFloatInput.floatB)]
+                                ?: 0.0) <= 0.0
+                        ) return@forEach
 
                         costsFloatInputList.add(
-                            CostsFloatInput(
-                                finalPriceWithDropChange,
-                                finalPrice,
-                                floatA = floatAtLowestPrice,
-                                floatB = (
-                                        (avgFloat * 10.0
-                                                - tradeUpInputComponentA.amount * ((floatAtLowestPrice - tradeUpInputComponentA.skin.minFloatCap) / tradeUpInputComponentA.skin.floatCapDifference))
-                                                * tradeUpInputComponentB.skin.floatCapDifference
-                                                + tradeUpInputComponentB.skin.minFloatCap
-                                        ) / tradeUpInputComponentB.amount
-
-                            )
+                            costFloatInput
                         )
                     }
                 }
             }
 
-            floatAtLowestPriceMap[wearSkinA] = costsFloatInputList.minByOrNull { it.costs } ?: return@forEach
+            floatAtLowestPriceMap[wearSkinA] = costsFloatInputList.minByOrNull { it.costsWithDropChange } ?: return@forEach
         }
         return floatAtLowestPriceMap
     }

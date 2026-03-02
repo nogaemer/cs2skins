@@ -6,7 +6,7 @@ import models.CSWear
  * TradeUp bundles a chosen input (with its computed input cost and floats)
  * and the corresponding output distribution, exposing useful KPIs:
  * - inputCostWithDropChange: total cost of the 10 inputs at the optimized floats
- * - expectedReturn: average value of outcomes (uniform over output skins)
+ * - expectedReturn: probability-weighted value of outcomes; P(skin) = (inputs from its collection / 10) / (output skins in that collection)
  * - profit: expectedReturn - inputCostWithDropChange
  * - roi: profit / inputCostWithDropChange
  * - profitChance: fraction of outcomes whose value >= inputCostWithDropChange
@@ -25,30 +25,31 @@ class TradeUp(
         output.skins.mapNotNull { skin ->
             val f = skin.float ?: return@mapNotNull null
             val wear = CSWear.floatToCSWear(f)
-            skin.price[wear]
+            skin.price[wear] ?: 0.0   // missing price counts as 0, not dropped
         }
     }
 
-    /** Expected return assuming uniform drop probability across output skins. */
+    /** Expected return using the real CS2 probability rule:
+     *  P(skin s in collection C) = (inputs from C / total inputs) / (output skins in C) */
     val expectedReturn: Double by lazy {
-        // Build ballots per output skin: each input instance contributes its amount
-        // as a ballot to every outcome that belongs to the same collection.
-        val ballotsPerSkin = output.skins.map { skin ->
-            val ballotsFromA = if (input.tradeUpInputComponentA.collectionId == skin.collectionId) input.tradeUpInputComponentA.amount else 0
-            val ballotsFromB = if (input.tradeUpInputComponentB.collectionId == skin.collectionId) input.tradeUpInputComponentB.amount else 0
-            Pair(skin, ballotsFromA + ballotsFromB)
-        }
+        val totalInputs = input.tradeUpInputComponentA.amount + input.tradeUpInputComponentB.amount
+        if (totalInputs == 0) return@lazy 0.0
 
-        val totalBallots = ballotsPerSkin.sumOf { it.second }
-        if (totalBallots == 0) return@lazy 0.0
+        // How many output skins belong to each collection (the denominator per collection).
+        val outputCountPerCollection = output.skins.groupingBy { it.collectionId }.eachCount()
 
         var sum = 0.0
-        for ((skin, ballots) in ballotsPerSkin) {
-            if (ballots == 0) continue
+        for (skin in output.skins) {
             val f = skin.float ?: continue
             val wear = CSWear.floatToCSWear(f)
             val value = skin.price[wear] ?: 0.0
-            val prob = ballots.toDouble() / totalBallots.toDouble()
+
+            val inputsFromCollection =
+                (if (input.tradeUpInputComponentA.collectionId == skin.collectionId) input.tradeUpInputComponentA.amount else 0) +
+                (if (input.tradeUpInputComponentB.collectionId == skin.collectionId) input.tradeUpInputComponentB.amount else 0)
+            val skinsInCollection = outputCountPerCollection[skin.collectionId] ?: 1
+
+            val prob = inputsFromCollection.toDouble() / totalInputs.toDouble() / skinsInCollection.toDouble()
             sum += value * prob
         }
         sum

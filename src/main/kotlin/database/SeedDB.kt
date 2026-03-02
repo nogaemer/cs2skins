@@ -95,8 +95,6 @@ class SeedDB {
             if (collections.length() > 1) println("WARN: Skin ${skin.getString("name")} has multiple collections")
             val collectionId = collections.getJSONObject(0).getString("id")
 
-            if (skin.getBoolean("souvenir")) continue
-
             val weapon = Weapon(
                 skin.optJSONObject("weapon")?.optString("id", null)?: continue,
                 skin.optJSONObject("weapon")?.optString("name", null)?: continue,
@@ -164,6 +162,12 @@ class SeedDB {
                 )
 
                 if (stattrak) {
+                    val skinNameStatTrak = "StatTrak™ ${skin.getString("name")} (${wear.getString("name")})"
+                    val priceObj = prices.binarySearchByItem(skinNameStatTrak)
+
+                    val price = priceObj?.optDouble("steamPrice", 0.0) ?: 0.0
+                    val weekSales = priceObj?.optInt("weekSales", 0) ?: 0
+
                     skinPrices.add(
                         SkinPrice(
                             skinId = stattrackSkinId,

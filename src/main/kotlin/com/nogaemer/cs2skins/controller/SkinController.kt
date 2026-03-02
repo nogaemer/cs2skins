@@ -1,8 +1,6 @@
 package com.nogaemer.cs2skins.controller
 
-import com.nogaemer.cs2skins.dto.SkinFilterRequest
-import com.nogaemer.cs2skins.dto.SkinPriceHistoryResponse
-import com.nogaemer.cs2skins.dto.SkinResponse
+import com.nogaemer.cs2skins.dto.*
 import com.nogaemer.cs2skins.service.SkinService
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
@@ -92,6 +90,14 @@ class SkinController(private val skinService: SkinService) {
 
         return ResponseEntity.ok(pagedHistory)
     }
+
+    @GetMapping("/weapons")
+    suspend fun getAllWeapons(): ResponseEntity<List<WeaponResponse>> =
+        ResponseEntity.ok(skinService.getAllWeapons())
+
+    @GetMapping("/rarities")
+    suspend fun getAllRarities(): ResponseEntity<List<RarityResponse>> =
+        ResponseEntity.ok(skinService.getAllRarities())
 
     companion object {
         private const val MAX_PRICE_HISTORY_PAGE_SIZE: Int = 1000

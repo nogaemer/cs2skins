@@ -1,12 +1,7 @@
 package com.nogaemer.cs2skins.service
 
-import com.nogaemer.cs2skins.dto.PriceInfo
-import com.nogaemer.cs2skins.dto.SkinFilterRequest
-import com.nogaemer.cs2skins.dto.SkinPriceHistoryResponse
-import com.nogaemer.cs2skins.dto.SkinResponse
-import database.SkinDTO
-import database.SkinPriceRepository
-import database.SkinRepository
+import com.nogaemer.cs2skins.dto.*
+import database.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.springframework.stereotype.Service
@@ -18,7 +13,9 @@ import java.time.ZoneOffset
 @Service
 class SkinService(
     private val skinRepository: SkinRepository = SkinRepository(),
-    private val skinPriceRepository: SkinPriceRepository = SkinPriceRepository()
+    private val skinPriceRepository: SkinPriceRepository = SkinPriceRepository(),
+    private val weaponRepository: WeaponRepository = WeaponRepository(),
+    private val rarityRepository: RarityRepository = RarityRepository()
 ) {
 
     suspend fun getAllSkins(): List<SkinResponse> = withContext(Dispatchers.IO) {
@@ -109,6 +106,14 @@ class SkinService(
                     quantity = point.quantity
                 )
             }
+    }
+
+    suspend fun getAllWeapons(): List<WeaponResponse> = withContext(Dispatchers.IO) {
+        weaponRepository.findAll().map { WeaponResponse(it.weaponId, it.name, it.image) }
+    }
+
+    suspend fun getAllRarities(): List<RarityResponse> = withContext(Dispatchers.IO) {
+        rarityRepository.findAll().map { RarityResponse(it.rarityId, it.name, it.colorHex) }
     }
 
     private fun mapToSkinResponse(skin: SkinDTO): SkinResponse {
