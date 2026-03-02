@@ -8,7 +8,7 @@
 --   input_cost_no_drop_change   total input cost (no drop-change adjustment)
 --   profit_no_drop_change       profit without drop-change adjustment
 --   roi_no_drop_change          ROI without drop-change adjustment
---   profit_chance               fraction of outcomes where output >= input cost
+--   profit_chance               fraction of outcomes where output value ≥ input cost (with drop-change adjustment)
 --
 -- Existing columns (input_cost, profit, roi, output_cost) store the
 -- "with drop-change" variants and are left unchanged.
