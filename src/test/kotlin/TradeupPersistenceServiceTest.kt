@@ -43,6 +43,11 @@ class TradeupPersistenceServiceTest {
         `when`(checkRs.getDouble("profit")).thenReturn(5.0)
         `when`(checkRs.getDouble("input_cost")).thenReturn(100.0)
         `when`(checkRs.getDouble("output_cost")).thenReturn(115.0)
+        `when`(checkRs.getDouble("input_cost_no_drop_change")).thenReturn(98.0)
+        `when`(checkRs.getDouble("profit_no_drop_change")).thenReturn(7.0)
+        `when`(checkRs.getDouble("roi_no_drop_change")).thenReturn(0.07)
+        `when`(checkRs.getDouble("profit_chance")).thenReturn(0.6)
+        `when`(checkRs.getDouble("profit_chance_no_drop_change")).thenReturn(0.65)
 
         service = TradeupPersistenceService(jdbcTemplate)
     }
@@ -54,7 +59,7 @@ class TradeupPersistenceServiceTest {
             .thenReturn(upsertStmt, checkStmt, snapshotStmt)
         `when`(checkRs.next()).thenReturn(false)
 
-        val written = service.persistResult(42, 0.15, 5.0, 100.0, 115.0)
+        val written = service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6, 0.65)
 
         assertTrue(written, "Expected a snapshot to be written")
         verify(upsertStmt).executeUpdate()
@@ -69,11 +74,35 @@ class TradeupPersistenceServiceTest {
             .thenReturn(upsertStmt, checkStmt)
         `when`(checkRs.next()).thenReturn(true) // Identical snapshot already recorded
 
-        val written = service.persistResult(42, 0.15, 5.0, 100.0, 115.0)
+        val written = service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6, 0.65)
 
         assertFalse(written, "Expected snapshot to be skipped")
         verify(upsertStmt).executeUpdate()
         verify(snapshotStmt, never()).executeUpdate()
+        verify(conn).commit()
+    }
+
+    @Test
+    fun `persistResult appends snapshot when latest snapshot has NULL nullable columns`() {
+        // Simulate a pre-migration snapshot that has NULL in the new columns
+        val nullableCheckStmt = mock(PreparedStatement::class.java)
+        val nullableCheckRs = mock(ResultSet::class.java)
+        `when`(conn.prepareStatement(any(String::class.java)))
+            .thenReturn(upsertStmt, nullableCheckStmt, snapshotStmt)
+        `when`(nullableCheckStmt.executeQuery()).thenReturn(nullableCheckRs)
+        `when`(nullableCheckRs.next()).thenReturn(true)
+        `when`(nullableCheckRs.getDouble("roi")).thenReturn(0.15)
+        `when`(nullableCheckRs.getDouble("profit")).thenReturn(5.0)
+        `when`(nullableCheckRs.getDouble("input_cost")).thenReturn(100.0)
+        `when`(nullableCheckRs.getDouble("output_cost")).thenReturn(115.0)
+        // Nullable columns return 0.0 and wasNull() = true (SQL NULL)
+        `when`(nullableCheckRs.getDouble("input_cost_no_drop_change")).thenReturn(0.0)
+        `when`(nullableCheckRs.wasNull()).thenReturn(true)
+
+        val written = service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6, 0.65)
+
+        assertTrue(written, "Expected a snapshot to be written when nullable columns are NULL in DB")
+        verify(snapshotStmt).executeUpdate()
         verify(conn).commit()
     }
 
@@ -83,7 +112,7 @@ class TradeupPersistenceServiceTest {
         `when`(upsertStmt.executeUpdate()).thenThrow(RuntimeException("DB failure"))
 
         assertThrows(RuntimeException::class.java) {
-            service.persistResult(42, 0.15, 5.0, 100.0, 115.0)
+            service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6, 0.65)
         }
 
         verify(conn).rollback()

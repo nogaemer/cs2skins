@@ -70,10 +70,16 @@ class TradeUp(
         if (inputCostWithDropChange.isFinite() && inputCostWithDropChange != 0.0) expectedReturn / inputCostWithDropChange else Double.NaN
     }
 
-    /** Probability that the outcome value is at least the input cost (0.0..1.0). */
+    /** Probability that the outcome value is at least the input cost (0.0..1.0). Uses inputCostWithDropChange as threshold. */
     val profitChance: Double by lazy {
         val n = outcomeValues.size
         if (n == 0) 0.0 else outcomeValues.count { it >= inputCostWithDropChange }.toDouble() / n
+    }
+
+    /** Probability that the outcome value is at least the plain input cost (no drop-change adjustment, 0.0..1.0). */
+    val profitChanceNoDropChange: Double by lazy {
+        val n = outcomeValues.size
+        if (n == 0) 0.0 else outcomeValues.count { it >= inputCost }.toDouble() / n
     }
 
     /** Same as profitChance but expressed in percent (0..100). */

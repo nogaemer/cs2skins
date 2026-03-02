@@ -67,6 +67,11 @@ data class TradeUpResultResponse(
     val profit: Double,
     val inputCost: Double,
     val outputCost: Double,
+    val inputCostNoDropChange: Double?,
+    val profitNoDropChange: Double?,
+    val roiNoDropChange: Double?,
+    val profitChance: Double?,
+    val profitChanceNoDropChange: Double?,
     val inputs: List<TradeUpInputInfo>,
     val outputs: List<TradeUpOutputInfo>,
     val createdAt: Long
@@ -156,6 +161,13 @@ data class TradeUpHistoryPoint(
     val profit: Double,
     val inputCost: Double,
     val outputCost: Double,
+    val inputCostNoDropChange: Double? = null,
+    val profitNoDropChange: Double? = null,
+    val roiNoDropChange: Double? = null,
+    /** Fraction of outcomes where output value ≥ input cost (with drop-change adjustment). */
+    val profitChance: Double? = null,
+    /** Fraction of outcomes where output value ≥ input cost (no drop-change adjustment). */
+    val profitChanceNoDropChange: Double? = null,
     /** Number of raw snapshots aggregated into this bucket. */
     val samples: Int = 1
 )
