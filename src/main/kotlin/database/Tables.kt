@@ -233,6 +233,10 @@ object TradeupsCurrent : Table("tradeups_current") {
     val profit = double("profit")
     val inputCost = double("input_cost")
     val outputCost = double("output_cost")
+    val inputCostNoDropChange = double("input_cost_no_drop_change").nullable()
+    val profitNoDropChange = double("profit_no_drop_change").nullable()
+    val roiNoDropChange = double("roi_no_drop_change").nullable()
+    val profitChance = double("profit_chance").nullable()
     val updatedAt = long("updated_at").clientDefault { System.currentTimeMillis() }
 
     override val primaryKey = PrimaryKey(tradeupId)
@@ -259,6 +263,10 @@ object TradeupSnapshots : Table("tradeup_snapshots") {
     val profit = double("profit")
     val inputCost = double("input_cost")
     val outputCost = double("output_cost")
+    val inputCostNoDropChange = double("input_cost_no_drop_change").nullable()
+    val profitNoDropChange = double("profit_no_drop_change").nullable()
+    val roiNoDropChange = double("roi_no_drop_change").nullable()
+    val profitChance = double("profit_chance").nullable()
 
     // snapshotSeq makes the key unique; snapshotTime must be included to satisfy TimescaleDB's
     // requirement that all UNIQUE/PK constraints include the partition column.

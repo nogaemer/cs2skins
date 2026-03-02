@@ -558,6 +558,10 @@ class TradeUpService(
         val profitValue: Double,
         val inputCostValue: Double,
         val outputCostValue: Double,
+        val inputCostNoDropChange: Double,
+        val profitNoDropChange: Double,
+        val roiNoDropChange: Double,
+        val profitChance: Double,
         val inputASkinId: String,
         val inputASkinName: String,
         val inputAAmount: Int,
@@ -618,6 +622,10 @@ class TradeUpService(
             profitValue = tradeUp.profitWithDropChange.let { if (it.isFinite()) it else 0.0 },
             inputCostValue = tradeUp.inputCostWithDropChange.let { if (it.isFinite()) it else 0.0 },
             outputCostValue = tradeUp.expectedReturn.let { if (it.isFinite()) it else 0.0 },
+            inputCostNoDropChange = tradeUp.inputCost.let { if (it.isFinite()) it else 0.0 },
+            profitNoDropChange = tradeUp.profit.let { if (it.isFinite()) it else 0.0 },
+            roiNoDropChange = tradeUp.roi.let { if (it.isFinite()) it else 0.0 },
+            profitChance = tradeUp.profitChance.let { if (it.isFinite()) it else 0.0 },
             inputASkinId = tradeUp.input.tradeUpInputComponentA.skin.skinId,
             inputASkinName = tradeUp.input.tradeUpInputComponentA.skin.name,
             inputAAmount = tradeUp.input.tradeUpInputComponentA.amount,
@@ -653,7 +661,7 @@ class TradeUpService(
         }
         val snapshotsCsv = buildString {
             for (r in results) {
-                append("${r.masterId}\t${DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(r.now)}\t${r.roiValue}\t${r.profitValue}\t${r.inputCostValue}\t${r.outputCostValue}\n")
+                append("${r.masterId}\t${DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(r.now)}\t${r.roiValue}\t${r.profitValue}\t${r.inputCostValue}\t${r.outputCostValue}\t${r.inputCostNoDropChange}\t${r.profitNoDropChange}\t${r.roiNoDropChange}\t${r.profitChance}\n")
             }
         }
 
@@ -684,7 +692,7 @@ class TradeUpService(
                 // 3. COPY tradeup_snapshots (1 row per master)
                 StringReader(snapshotsCsv).use {
                     copyManager.copyIn(
-                        "COPY tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')",
+                        "COPY tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost, input_cost_no_drop_change, profit_no_drop_change, roi_no_drop_change, profit_chance) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t')",
                         it
                     )
                 }
@@ -692,14 +700,20 @@ class TradeUpService(
                 // 4. Upsert tradeups_current (1 row per master)
                 conn.prepareStatement(
                     """
-                    INSERT INTO tradeups_current (tradeup_id, roi, profit, input_cost, output_cost, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO tradeups_current (tradeup_id, roi, profit, input_cost, output_cost,
+                        input_cost_no_drop_change, profit_no_drop_change, roi_no_drop_change, profit_chance,
+                        updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (tradeup_id) DO UPDATE SET
-                        roi = EXCLUDED.roi,
-                        profit = EXCLUDED.profit,
-                        input_cost = EXCLUDED.input_cost,
-                        output_cost = EXCLUDED.output_cost,
-                        updated_at = EXCLUDED.updated_at
+                        roi                       = EXCLUDED.roi,
+                        profit                    = EXCLUDED.profit,
+                        input_cost                = EXCLUDED.input_cost,
+                        output_cost               = EXCLUDED.output_cost,
+                        input_cost_no_drop_change = EXCLUDED.input_cost_no_drop_change,
+                        profit_no_drop_change     = EXCLUDED.profit_no_drop_change,
+                        roi_no_drop_change        = EXCLUDED.roi_no_drop_change,
+                        profit_chance             = EXCLUDED.profit_chance,
+                        updated_at                = EXCLUDED.updated_at
                     """.trimIndent()
                 ).use { stmt ->
                     for (r in results) {
@@ -708,7 +722,11 @@ class TradeUpService(
                         stmt.setDouble(3, r.profitValue)
                         stmt.setDouble(4, r.inputCostValue)
                         stmt.setDouble(5, r.outputCostValue)
-                        stmt.setLong(6, r.now.toInstant().toEpochMilli())
+                        stmt.setDouble(6, r.inputCostNoDropChange)
+                        stmt.setDouble(7, r.profitNoDropChange)
+                        stmt.setDouble(8, r.roiNoDropChange)
+                        stmt.setDouble(9, r.profitChance)
+                        stmt.setLong(10, r.now.toInstant().toEpochMilli())
                         stmt.addBatch()
                     }
                     stmt.executeBatch()
@@ -943,6 +961,10 @@ class TradeUpService(
                         ?: 0.0,
                     outputCost = rows.map { it[TradeupSnapshots.outputCost] }.takeIf { it.isNotEmpty() }?.average()
                         ?: 0.0,
+                    inputCostNoDropChange = rows.mapNotNull { it[TradeupSnapshots.inputCostNoDropChange] }.takeIf { it.isNotEmpty() }?.average(),
+                    profitNoDropChange = rows.mapNotNull { it[TradeupSnapshots.profitNoDropChange] }.takeIf { it.isNotEmpty() }?.average(),
+                    roiNoDropChange = rows.mapNotNull { it[TradeupSnapshots.roiNoDropChange] }.takeIf { it.isNotEmpty() }?.average(),
+                    profitChance = rows.mapNotNull { it[TradeupSnapshots.profitChance] }.takeIf { it.isNotEmpty() }?.average(),
                     samples = rows.size
                 )
             }
@@ -1309,6 +1331,10 @@ class TradeUpService(
             profit = row.getOrNull(TradeupsCurrent.profit) ?: 0.0,
             inputCost = row.getOrNull(TradeupsCurrent.inputCost) ?: 0.0,
             outputCost = row.getOrNull(TradeupsCurrent.outputCost) ?: 0.0,
+            inputCostNoDropChange = row.getOrNull(TradeupsCurrent.inputCostNoDropChange),
+            profitNoDropChange = row.getOrNull(TradeupsCurrent.profitNoDropChange),
+            roiNoDropChange = row.getOrNull(TradeupsCurrent.roiNoDropChange),
+            profitChance = row.getOrNull(TradeupsCurrent.profitChance),
             inputs = inputsByResultId[resultId] ?: emptyList(),
             outputs = outputsByResultId[resultId] ?: emptyList(),
             createdAt = row[TradeupsMaster.createdAt]

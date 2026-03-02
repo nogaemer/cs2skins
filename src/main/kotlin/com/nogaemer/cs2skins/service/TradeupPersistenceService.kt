@@ -28,7 +28,11 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
         roi: Double,
         profit: Double,
         inputCost: Double,
-        outputCost: Double
+        outputCost: Double,
+        inputCostNoDropChange: Double,
+        profitNoDropChange: Double,
+        roiNoDropChange: Double,
+        profitChance: Double
     ): Boolean = jdbcTemplate.execute { conn: Connection ->
         val wasAutoCommit = conn.autoCommit
         conn.autoCommit = false
@@ -42,7 +46,11 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
                 stmt.setDouble(3, profit)
                 stmt.setDouble(4, inputCost)
                 stmt.setDouble(5, outputCost)
-                stmt.setLong(6, now.toInstant().toEpochMilli())
+                stmt.setDouble(6, inputCostNoDropChange)
+                stmt.setDouble(7, profitNoDropChange)
+                stmt.setDouble(8, roiNoDropChange)
+                stmt.setDouble(9, profitChance)
+                stmt.setLong(10, now.toInstant().toEpochMilli())
                 stmt.executeUpdate()
             }
 
@@ -52,11 +60,22 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
             val alreadyRecorded = conn.prepareStatement(LATEST_SNAPSHOT_SQL).use { stmt ->
                 stmt.setInt(1, tradeupId)
                 stmt.executeQuery().use { rs ->
-                    rs.next() &&
-                        approximatelyEqual(rs.getDouble("roi"), roi) &&
-                        approximatelyEqual(rs.getDouble("profit"), profit) &&
-                        approximatelyEqual(rs.getDouble("input_cost"), inputCost) &&
-                        approximatelyEqual(rs.getDouble("output_cost"), outputCost)
+                    if (!rs.next()) return@use false
+                    // Non-nullable columns
+                    if (!approximatelyEqual(rs.getDouble("roi"), roi)) return@use false
+                    if (!approximatelyEqual(rs.getDouble("profit"), profit)) return@use false
+                    if (!approximatelyEqual(rs.getDouble("input_cost"), inputCost)) return@use false
+                    if (!approximatelyEqual(rs.getDouble("output_cost"), outputCost)) return@use false
+                    // Nullable columns: treat NULL in DB as not-equal to any Double value
+                    val dbInputCostNdc = rs.getDouble("input_cost_no_drop_change")
+                    if (rs.wasNull() || !approximatelyEqual(dbInputCostNdc, inputCostNoDropChange)) return@use false
+                    val dbProfitNdc = rs.getDouble("profit_no_drop_change")
+                    if (rs.wasNull() || !approximatelyEqual(dbProfitNdc, profitNoDropChange)) return@use false
+                    val dbRoiNdc = rs.getDouble("roi_no_drop_change")
+                    if (rs.wasNull() || !approximatelyEqual(dbRoiNdc, roiNoDropChange)) return@use false
+                    val dbProfitChance = rs.getDouble("profit_chance")
+                    if (rs.wasNull() || !approximatelyEqual(dbProfitChance, profitChance)) return@use false
+                    true
                 }
             }
 
@@ -70,6 +89,10 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
                     stmt.setDouble(4, profit)
                     stmt.setDouble(5, inputCost)
                     stmt.setDouble(6, outputCost)
+                    stmt.setDouble(7, inputCostNoDropChange)
+                    stmt.setDouble(8, profitNoDropChange)
+                    stmt.setDouble(9, roiNoDropChange)
+                    stmt.setDouble(10, profitChance)
                     stmt.executeUpdate()
                 }
                 snapshotWritten = true
@@ -89,18 +112,25 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
 
     companion object {
         private val UPSERT_CURRENT_SQL = """
-            INSERT INTO tradeups_current (tradeup_id, roi, profit, input_cost, output_cost, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO tradeups_current (tradeup_id, roi, profit, input_cost, output_cost,
+                input_cost_no_drop_change, profit_no_drop_change, roi_no_drop_change, profit_chance,
+                updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (tradeup_id) DO UPDATE SET
-                roi         = EXCLUDED.roi,
-                profit      = EXCLUDED.profit,
-                input_cost  = EXCLUDED.input_cost,
-                output_cost = EXCLUDED.output_cost,
-                updated_at  = EXCLUDED.updated_at
+                roi                       = EXCLUDED.roi,
+                profit                    = EXCLUDED.profit,
+                input_cost                = EXCLUDED.input_cost,
+                output_cost               = EXCLUDED.output_cost,
+                input_cost_no_drop_change = EXCLUDED.input_cost_no_drop_change,
+                profit_no_drop_change     = EXCLUDED.profit_no_drop_change,
+                roi_no_drop_change        = EXCLUDED.roi_no_drop_change,
+                profit_chance             = EXCLUDED.profit_chance,
+                updated_at                = EXCLUDED.updated_at
         """.trimIndent()
 
         private val LATEST_SNAPSHOT_SQL = """
-            SELECT roi, profit, input_cost, output_cost
+            SELECT roi, profit, input_cost, output_cost,
+                   input_cost_no_drop_change, profit_no_drop_change, roi_no_drop_change, profit_chance
             FROM tradeup_snapshots
             WHERE tradeup_id = ?
             ORDER BY snapshot_time DESC
@@ -108,8 +138,9 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
         """.trimIndent()
 
         private val INSERT_SNAPSHOT_SQL = """
-            INSERT INTO tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost,
+                input_cost_no_drop_change, profit_no_drop_change, roi_no_drop_change, profit_chance)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.trimIndent()
 
         /** Tolerance for idempotency comparisons (1e-9 ≈ sub-cent on dollar-scale figures). */
