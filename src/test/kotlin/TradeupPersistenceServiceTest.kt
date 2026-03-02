@@ -47,6 +47,7 @@ class TradeupPersistenceServiceTest {
         `when`(checkRs.getDouble("profit_no_drop_change")).thenReturn(7.0)
         `when`(checkRs.getDouble("roi_no_drop_change")).thenReturn(0.07)
         `when`(checkRs.getDouble("profit_chance")).thenReturn(0.6)
+        `when`(checkRs.getDouble("profit_chance_no_drop_change")).thenReturn(0.65)
 
         service = TradeupPersistenceService(jdbcTemplate)
     }
@@ -58,7 +59,7 @@ class TradeupPersistenceServiceTest {
             .thenReturn(upsertStmt, checkStmt, snapshotStmt)
         `when`(checkRs.next()).thenReturn(false)
 
-        val written = service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6)
+        val written = service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6, 0.65)
 
         assertTrue(written, "Expected a snapshot to be written")
         verify(upsertStmt).executeUpdate()
@@ -73,7 +74,7 @@ class TradeupPersistenceServiceTest {
             .thenReturn(upsertStmt, checkStmt)
         `when`(checkRs.next()).thenReturn(true) // Identical snapshot already recorded
 
-        val written = service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6)
+        val written = service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6, 0.65)
 
         assertFalse(written, "Expected snapshot to be skipped")
         verify(upsertStmt).executeUpdate()
@@ -98,7 +99,7 @@ class TradeupPersistenceServiceTest {
         `when`(nullableCheckRs.getDouble("input_cost_no_drop_change")).thenReturn(0.0)
         `when`(nullableCheckRs.wasNull()).thenReturn(true)
 
-        val written = service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6)
+        val written = service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6, 0.65)
 
         assertTrue(written, "Expected a snapshot to be written when nullable columns are NULL in DB")
         verify(snapshotStmt).executeUpdate()
@@ -111,7 +112,7 @@ class TradeupPersistenceServiceTest {
         `when`(upsertStmt.executeUpdate()).thenThrow(RuntimeException("DB failure"))
 
         assertThrows(RuntimeException::class.java) {
-            service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6)
+            service.persistResult(42, 0.15, 5.0, 100.0, 115.0, 98.0, 7.0, 0.07, 0.6, 0.65)
         }
 
         verify(conn).rollback()

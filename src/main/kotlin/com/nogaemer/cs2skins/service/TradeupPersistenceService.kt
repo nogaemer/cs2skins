@@ -32,7 +32,8 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
         inputCostNoDropChange: Double,
         profitNoDropChange: Double,
         roiNoDropChange: Double,
-        profitChance: Double
+        profitChance: Double,
+        profitChanceNoDropChange: Double
     ): Boolean = jdbcTemplate.execute { conn: Connection ->
         val wasAutoCommit = conn.autoCommit
         conn.autoCommit = false
@@ -50,7 +51,8 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
                 stmt.setDouble(7, profitNoDropChange)
                 stmt.setDouble(8, roiNoDropChange)
                 stmt.setDouble(9, profitChance)
-                stmt.setLong(10, now.toInstant().toEpochMilli())
+                stmt.setDouble(10, profitChanceNoDropChange)
+                stmt.setLong(11, now.toInstant().toEpochMilli())
                 stmt.executeUpdate()
             }
 
@@ -75,6 +77,8 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
                     if (rs.wasNull() || !approximatelyEqual(dbRoiNdc, roiNoDropChange)) return@use false
                     val dbProfitChance = rs.getDouble("profit_chance")
                     if (rs.wasNull() || !approximatelyEqual(dbProfitChance, profitChance)) return@use false
+                    val dbProfitChanceNdc = rs.getDouble("profit_chance_no_drop_change")
+                    if (rs.wasNull() || !approximatelyEqual(dbProfitChanceNdc, profitChanceNoDropChange)) return@use false
                     true
                 }
             }
@@ -93,6 +97,7 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
                     stmt.setDouble(8, profitNoDropChange)
                     stmt.setDouble(9, roiNoDropChange)
                     stmt.setDouble(10, profitChance)
+                    stmt.setDouble(11, profitChanceNoDropChange)
                     stmt.executeUpdate()
                 }
                 snapshotWritten = true
@@ -113,24 +118,26 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
     companion object {
         private val UPSERT_CURRENT_SQL = """
             INSERT INTO tradeups_current (tradeup_id, roi, profit, input_cost, output_cost,
-                input_cost_no_drop_change, profit_no_drop_change, roi_no_drop_change, profit_chance,
-                updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                input_cost_no_drop_change, profit_no_drop_change, roi_no_drop_change,
+                profit_chance, profit_chance_no_drop_change, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (tradeup_id) DO UPDATE SET
-                roi                       = EXCLUDED.roi,
-                profit                    = EXCLUDED.profit,
-                input_cost                = EXCLUDED.input_cost,
-                output_cost               = EXCLUDED.output_cost,
-                input_cost_no_drop_change = EXCLUDED.input_cost_no_drop_change,
-                profit_no_drop_change     = EXCLUDED.profit_no_drop_change,
-                roi_no_drop_change        = EXCLUDED.roi_no_drop_change,
-                profit_chance             = EXCLUDED.profit_chance,
-                updated_at                = EXCLUDED.updated_at
+                roi                           = EXCLUDED.roi,
+                profit                        = EXCLUDED.profit,
+                input_cost                    = EXCLUDED.input_cost,
+                output_cost                   = EXCLUDED.output_cost,
+                input_cost_no_drop_change     = EXCLUDED.input_cost_no_drop_change,
+                profit_no_drop_change         = EXCLUDED.profit_no_drop_change,
+                roi_no_drop_change            = EXCLUDED.roi_no_drop_change,
+                profit_chance                 = EXCLUDED.profit_chance,
+                profit_chance_no_drop_change  = EXCLUDED.profit_chance_no_drop_change,
+                updated_at                    = EXCLUDED.updated_at
         """.trimIndent()
 
         private val LATEST_SNAPSHOT_SQL = """
             SELECT roi, profit, input_cost, output_cost,
-                   input_cost_no_drop_change, profit_no_drop_change, roi_no_drop_change, profit_chance
+                   input_cost_no_drop_change, profit_no_drop_change, roi_no_drop_change,
+                   profit_chance, profit_chance_no_drop_change
             FROM tradeup_snapshots
             WHERE tradeup_id = ?
             ORDER BY snapshot_time DESC
@@ -139,8 +146,9 @@ class TradeupPersistenceService(private val jdbcTemplate: JdbcTemplate) {
 
         private val INSERT_SNAPSHOT_SQL = """
             INSERT INTO tradeup_snapshots (tradeup_id, snapshot_time, roi, profit, input_cost, output_cost,
-                input_cost_no_drop_change, profit_no_drop_change, roi_no_drop_change, profit_chance)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                input_cost_no_drop_change, profit_no_drop_change, roi_no_drop_change,
+                profit_chance, profit_chance_no_drop_change)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.trimIndent()
 
         /** Tolerance for idempotency comparisons (1e-9 ≈ sub-cent on dollar-scale figures). */

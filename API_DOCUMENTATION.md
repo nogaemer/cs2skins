@@ -291,6 +291,11 @@ Retrieve all calculated trade-up opportunities.
     "profit": 2.50,
     "inputCost": 5.50,
     "outputCost": 8.00,
+    "inputCostNoDropChange": 5.20,
+    "profitNoDropChange": 2.80,
+    "roiNoDropChange": 1.54,
+    "profitChance": 0.60,
+    "profitChanceNoDropChange": 0.65,
     "inputs": [
       {
         "skinId": "skin-ak47-blue-laminate",
@@ -404,6 +409,11 @@ Filter and sort trade-up opportunities based on various criteria with pagination
       "profit": 5.23,
       "inputCost": 6.15,
       "outputCost": 11.38,
+      "inputCostNoDropChange": 5.90,
+      "profitNoDropChange": 5.48,
+      "roiNoDropChange": 1.93,
+      "profitChance": 0.75,
+      "profitChanceNoDropChange": 0.80,
       "inputs": [...],
       "outputs": [...],
       "createdAt": 1708354800000
@@ -484,6 +494,11 @@ GET /api/tradeups/42/history?bucket=86400000&maxPoints=7
     "profit": 3.15,
     "inputCost": 6.20,
     "outputCost": 9.35,
+    "inputCostNoDropChange": 5.95,
+    "profitNoDropChange": 3.40,
+    "roiNoDropChange": 1.57,
+    "profitChance": 0.65,
+    "profitChanceNoDropChange": 0.70,
     "samples": 12
   },
   {
@@ -492,6 +507,11 @@ GET /api/tradeups/42/history?bucket=86400000&maxPoints=7
     "profit": 2.97,
     "inputCost": 6.20,
     "outputCost": 9.17,
+    "inputCostNoDropChange": 5.95,
+    "profitNoDropChange": 3.22,
+    "roiNoDropChange": 1.54,
+    "profitChance": 0.60,
+    "profitChanceNoDropChange": 0.65,
     "samples": 8
   }
 ]
@@ -499,10 +519,15 @@ GET /api/tradeups/42/history?bucket=86400000&maxPoints=7
 
 **Response fields:**
 - `bucketStart` — start of the bucket as epoch milliseconds
-- `roi` — average ROI in this bucket (e.g. `1.42` = 42 % profit)
-- `profit` — average profit in USD
-- `inputCost` — average total input cost in USD
+- `roi` — average ROI in this bucket, with drop-change adjustment (e.g. `1.42` = 42 % profit)
+- `profit` — average profit in USD, with drop-change adjustment
+- `inputCost` — average total input cost in USD, with drop-change adjustment
 - `outputCost` — average expected output value in USD
+- `inputCostNoDropChange` — average input cost without float drop-change adjustment (`null` for pre-migration rows)
+- `profitNoDropChange` — average profit without drop-change adjustment (`null` for pre-migration rows)
+- `roiNoDropChange` — average ROI without drop-change adjustment (`null` for pre-migration rows)
+- `profitChance` — average fraction of outcomes where output value ≥ input cost (with drop-change threshold) (`null` for pre-migration rows)
+- `profitChanceNoDropChange` — average fraction of outcomes where output value ≥ input cost (no drop-change threshold) (`null` for pre-migration rows)
 - `samples` — number of raw snapshots aggregated into this bucket
 
 **Status Codes:**
@@ -933,10 +958,15 @@ Check the status of background jobs.
   } | null;
   stattrak: boolean;
   outputFloat: number; // Average output float (0.0 - 1.0)
-  roi: number; // Return on investment multiplier (e.g., 1.45 = 45% profit)
-  profit: number; // Profit in dollars
-  inputCost: number; // Total cost of inputs in dollars
+  roi: number; // Return on investment multiplier with drop-change adjustment (e.g., 1.45 = 45% profit)
+  profit: number; // Profit in dollars with drop-change adjustment
+  inputCost: number; // Total cost of inputs in dollars with drop-change adjustment
   outputCost: number; // Expected value of outputs in dollars
+  inputCostNoDropChange: number | null; // Total cost of inputs without float drop-change adjustment (null = pre-migration row)
+  profitNoDropChange: number | null; // Profit without drop-change adjustment (null = pre-migration row)
+  roiNoDropChange: number | null; // ROI without drop-change adjustment (null = pre-migration row)
+  profitChance: number | null; // Fraction of outcomes where output ≥ input cost (with drop-change threshold, 0.0–1.0; null = pre-migration row)
+  profitChanceNoDropChange: number | null; // Fraction of outcomes where output ≥ input cost (no drop-change threshold, 0.0–1.0; null = pre-migration row)
   inputs: [
     {
       skinId: string;
@@ -965,10 +995,15 @@ Check the status of background jobs.
 ```typescript
 {
   bucketStart: number;  // Start of bucket as epoch ms
-  roi: number;          // Average ROI in this bucket
-  profit: number;       // Average profit in USD
-  inputCost: number;    // Average total input cost in USD
+  roi: number;          // Average ROI with drop-change adjustment
+  profit: number;       // Average profit in USD with drop-change adjustment
+  inputCost: number;    // Average total input cost in USD with drop-change adjustment
   outputCost: number;   // Average expected output value in USD
+  inputCostNoDropChange: number | null;     // Average input cost without drop-change adjustment (null = pre-migration)
+  profitNoDropChange: number | null;        // Average profit without drop-change adjustment (null = pre-migration)
+  roiNoDropChange: number | null;           // Average ROI without drop-change adjustment (null = pre-migration)
+  profitChance: number | null;             // Average fraction of outcomes where output ≥ input cost (with drop-change threshold; null = pre-migration)
+  profitChanceNoDropChange: number | null; // Average fraction of outcomes where output ≥ input cost (no drop-change threshold; null = pre-migration)
   samples: number;      // Number of raw snapshots in this bucket (default 1 for raw rows)
 }
 ```
