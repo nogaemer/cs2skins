@@ -36,4 +36,7 @@ build/
 
 ### Mac OS ###
 .DS_Store
-/.env
+
+.env
+/src/main/kotlin/de/nogaemer/cs2skinsv2/config/AppConfig.kt
+/digest.txt

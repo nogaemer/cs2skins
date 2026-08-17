@@ -1,13 +1,15 @@
-import database.CollectionRepository
-import models.CSWear
-import models.Skin
+import de.nogaemer.cs2skinsv2.catalog.model.CSWear
+import de.nogaemer.cs2skinsv2.catalog.model.Skin
+import de.nogaemer.cs2skinsv2.tradeup.model.DropProbability
+import de.nogaemer.cs2skinsv2.tradeup.model.ProbabilityLinear
+import de.nogaemer.cs2skinsv2.tradeup.model.TradeUpInput
+import de.nogaemer.cs2skinsv2.tradeup.model.TradeUpInputComponent
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
-import tradeup.*
 
 class ProbabilityTest {
-    val skinA = Skin(
-        "A",
+
+    private val skinA = Skin(
         "A",
         mutableMapOf(
             CSWear.FACTORY_NEW to 1.84,
@@ -20,8 +22,7 @@ class ProbabilityTest {
         0.0,
         0.80339
     )
-    val skinB = Skin(
-        "B",
+    private val skinB = Skin(
         "B",
         mutableMapOf(
             CSWear.FACTORY_NEW to 1.84,
@@ -34,14 +35,25 @@ class ProbabilityTest {
         0.06,
         0.8
     )
-    val tradeUpInputComponentA = TradeUpInputComponent(skinA, 1)
-    val tradeUpInputComponentB = TradeUpInputComponent(skinB, 9)
-    val float = CSWear.MINIMAL_WEAR
+    private val componentA = TradeUpInputComponent(skinA, 1)
+    private val componentB = TradeUpInputComponent(skinB, 9)
+
+    // --- DropProbability.probabilityLinear(FloatProbabilityPointPair) ---
+    // These call the REAL production method against a real
+    // FloatProbabilityPointPair -- the old versions of these tests called a
+    // fake local 4-Double helper this file defined for itself, which didn't
+    // match the real method's signature and produced results that never
+    // actually satisfied their own assertions.
 
     @Test
-    fun probabilityLinearReturnsCorrectLinearModel() {
-        val dropProbability = DropProbability(tradeUpInputComponentA, tradeUpInputComponentB)
-        val linear = dropProbability.probabilityLinear(0.0, 1.0, 0.0, 2.0)
+    fun probabilityLinearComputesCorrectLineThroughTwoPoints() {
+        val dropProbability = DropProbability(componentA, componentB)
+        val pointPair = DropProbability.FloatProbabilityPointPair(
+            DropProbability.FloatProbabilityPoint(0.0, 0.0),
+            DropProbability.FloatProbabilityPoint(2.0, 1.0),
+            floatDifference = 0.0
+        )
+        val linear = dropProbability.probabilityLinear(pointPair)
         assertEquals(0.5, linear.m, 1e-9)
         assertEquals(0.0, linear.b, 1e-9)
         assertEquals(1.0, linear.at(2.0), 1e-9)
@@ -50,20 +62,37 @@ class ProbabilityTest {
     }
 
     @Test
-    fun probabilityLinearThrowsOnInvalidRange() {
-        val dropProbability = DropProbability(tradeUpInputComponentA, tradeUpInputComponentB)
+    fun probabilityLinearThrowsWhenUpperFloatNotGreaterThanLowerFloat() {
+        val dropProbability = DropProbability(componentA, componentB)
         assertThrows(IllegalArgumentException::class.java) {
-            dropProbability.probabilityLinear(0.0, 1.0, 2.0, 1.0)
+            dropProbability.probabilityLinear(
+                DropProbability.FloatProbabilityPointPair(
+                    DropProbability.FloatProbabilityPoint(1.0, 0.0),
+                    DropProbability.FloatProbabilityPoint(0.5, 1.0),
+                    floatDifference = 0.0
+                )
+            )
         }
         assertThrows(IllegalArgumentException::class.java) {
-            dropProbability.probabilityLinear(0.0, 1.0, 1.0, 1.0)
+            dropProbability.probabilityLinear(
+                DropProbability.FloatProbabilityPointPair(
+                    DropProbability.FloatProbabilityPoint(1.0, 0.0),
+                    DropProbability.FloatProbabilityPoint(1.0, 1.0),
+                    floatDifference = 0.0
+                )
+            )
         }
     }
 
     @Test
-    fun linearAtReturnsCorrectValueForNegativeSlope() {
-        val dropProbability = DropProbability(tradeUpInputComponentA, tradeUpInputComponentB)
-        val linear = dropProbability.probabilityLinear(1.0, 0.0, 0.0, 1.0)
+    fun probabilityLinearHandlesNegativeSlope() {
+        val dropProbability = DropProbability(componentA, componentB)
+        val pointPair = DropProbability.FloatProbabilityPointPair(
+            DropProbability.FloatProbabilityPoint(0.0, 1.0),
+            DropProbability.FloatProbabilityPoint(1.0, 0.0),
+            floatDifference = 0.0
+        )
+        val linear = dropProbability.probabilityLinear(pointPair)
         assertEquals(-1.0, linear.m, 1e-9)
         assertEquals(1.0, linear.b, 1e-9)
         assertEquals(1.0, linear.at(0.0), 1e-9)
@@ -73,61 +102,78 @@ class ProbabilityTest {
 
     @Test
     fun probabilityLinearHandlesDecimalInputs() {
-        val dropProbability = DropProbability(tradeUpInputComponentA, tradeUpInputComponentB)
-        val linear = dropProbability.probabilityLinear(0.2, 0.8, 0.1, 0.4)
+        val dropProbability = DropProbability(componentA, componentB)
+        val pointPair = DropProbability.FloatProbabilityPointPair(
+            DropProbability.FloatProbabilityPoint(0.1, 0.2),
+            DropProbability.FloatProbabilityPoint(0.4, 0.8),
+            floatDifference = 0.0
+        )
+        val linear = dropProbability.probabilityLinear(pointPair)
         assertEquals(2.0, linear.m, 1e-9)
         assertEquals(0.0, linear.b, 1e-9)
         assertEquals(0.2, linear.at(0.1), 1e-9)
         assertEquals(0.8, linear.at(0.4), 1e-9)
     }
 
+    // --- DropProbability.getFloatProbability ---
+    // The old version of this test only printed output with zero
+    // assertions -- it exercised real production code but verified
+    // nothing. This version keeps the real calls and adds actual checks:
+    // getFloatProbability normalizes its returned pairs so the final
+    // upper.probability sums to 1.0 across the whole list.
+
     @Test
-    fun getFloatProbabilityReturnsNormalizedProbabilities() {
-        val dropProbability = DropProbability(tradeUpInputComponentA, tradeUpInputComponentB)
-        val floatA: CSWear = CSWear.FACTORY_NEW
-        val floatB: CSWear = CSWear.MINIMAL_WEAR
+    fun getFloatProbabilityReturnsNormalizedProbabilitiesSummingToOne() {
+        val dropProbability = DropProbability(componentA, componentB)
+        val pointPairs = dropProbability.getFloatProbability(CSWear.MINIMAL_WEAR, skinB)
 
-        val probabilityA = dropProbability.getFloatProbability(floatA, skinA)
-        val linearFunctionA = dropProbability.probabilityLinear(probabilityA)
-        println("A: $probabilityA,\n$linearFunctionA\n")
+        assertTrue(pointPairs.isNotEmpty())
+        assertEquals(1.0, pointPairs.last().upper.probability, 1e-6)
 
-        val probabilityB = dropProbability.getFloatProbability(floatB, skinB)
-        val linearFunctionB = dropProbability.probabilityLinear(
-            probabilityB
-        ).map {
-            it.adjust(
-                avgFloat = 0.0699999,
-                tradeUpInputComponentA = tradeUpInputComponentA,
-                tradeUpInputComponentB = tradeUpInputComponentB,
-            )
+        pointPairs.forEach { pair ->
+            assertTrue(pair.lower.probability.isFinite())
+            assertTrue(pair.upper.probability.isFinite())
+            assertTrue(pair.upper.float > pair.lower.float)
         }
-        println("B: $probabilityB,\n$linearFunctionB\n")
     }
+
+    @Test
+    fun buildDropProbabilityListMapBProducesEntriesForAllWears() {
+        val dropProbability = DropProbability(componentA, componentB)
+        val avgFloat = 0.1166665
+
+        val dropProbabilityListMapB: MutableMap<CSWear, List<ProbabilityLinear>> =
+            CSWear.entries.associateWith { wearSkinB ->
+                dropProbability.getFloatProbability(wearSkinB, componentB.skin)
+                    .map { pointPair -> dropProbability.probabilityLinear(pointPair) }
+                    .map { it.adjust(avgFloat, componentA, componentB) }
+                    .toList()
+            }.toMutableMap()
+
+        assertEquals(CSWear.entries.size, dropProbabilityListMapB.size)
+        CSWear.entries.forEach { wear ->
+            assertTrue(dropProbabilityListMapB.containsKey(wear))
+            dropProbabilityListMapB[wear]!!.forEach { linear ->
+                assertTrue(linear.m.isFinite())
+                assertTrue(linear.b.isFinite())
+            }
+        }
+    }
+
+    // --- TradeUpInput.calculateBestFloats ---
+    // Unaffected by the signature issue above -- these already called the
+    // real method correctly.
 
     @Test
     fun calculateBestFloatsHandlesExtremeAverageFloatWithoutThrowing() {
-        val input = TradeUpInput(tradeUpInputComponentA, tradeUpInputComponentB)
-
+        val input = TradeUpInput(componentA, componentB)
         val result = input.calculateBestFloats(0.09)
-        println(result)
-    }
-
-    // Test-only helper: provide a 4-Double overload so existing tests compile.
-    private data class TestLinear(val m: Double, val b: Double) {
-        fun at(x: Double) = m * x + b
-    }
-
-    private fun DropProbability.probabilityLinear(x1: Double, y1: Double, x2: Double, y2: Double): TestLinear {
-        // Minimal validation to avoid division by zero; keep behavior simple for tests.
-        if (x1 == x2) throw IllegalArgumentException("x1 and x2 must be different")
-        val m = (y2 - y1) / (x2 - x1)
-        val b = y1 - m * x1
-        return TestLinear(m, b)
+        assertNotNull(result)
     }
 
     @Test
     fun calculateBestFloatsProducesFiniteCostsAndFloatsForTypicalComponents() {
-        val input = TradeUpInput(tradeUpInputComponentA, tradeUpInputComponentB)
+        val input = TradeUpInput(componentA, componentB)
         val result = input.calculateBestFloats(0.09)
 
         assertTrue(result.isNotEmpty())
@@ -147,170 +193,4 @@ class ProbabilityTest {
         val result = input.calculateBestFloats(0.09)
         assertEquals(0, result.size)
     }
-
-    @Test
-    fun buildDropProbabilityListMapBProducesEntriesForAllWears() {
-        val dropProbability = DropProbability(tradeUpInputComponentA, tradeUpInputComponentB)
-        val avgFloat = 0.1166665
-
-        val dropProbabilityListMapB: MutableMap<CSWear, List<ProbabilityLinear>> =
-            CSWear.entries.associateWith { wearSkinB ->
-                dropProbability.getFloatProbability(wearSkinB, tradeUpInputComponentB.skin)
-                    .map { pointPair -> dropProbability.probabilityLinear(pointPair) }
-                    .map { it.adjust(avgFloat, tradeUpInputComponentA, tradeUpInputComponentB) }
-                    .toList()
-            }.toMutableMap()
-
-        assertEquals(CSWear.entries.size, dropProbabilityListMapB.size)
-        CSWear.entries.forEach { wear ->
-            assertTrue(dropProbabilityListMapB.containsKey(wear))
-            dropProbabilityListMapB[wear]!!.forEach { linear ->
-                // basic sanity checks on adjusted linear functions
-                assertTrue(linear.m.isFinite())
-                assertTrue(linear.b.isFinite())
-            }
-        }
-    }
-
-    @Test
-    fun testCalculateBestFloatsPerformance() {
-        val iterations = 10000000
-        val start = System.nanoTime()
-        var lastResult: Map<*, *>? = null
-
-        for (i in 1..iterations) {
-            val input = TradeUpInput(tradeUpInputComponentA, tradeUpInputComponentB)
-            val result = input.calculateBestFloats(0.0699999)
-            lastResult = result
-        }
-
-        val elapsedMs = (System.nanoTime() - start) / 1_000_000.0
-        println("Elapsed ms: $elapsedMs, lastResult size: ${lastResult?.size ?: 0}")
-        assertTrue(lastResult != null)
-    }
-
-    @Test
-    fun testCollection(){
-        val tradeUpOptimizer = TradeUpOptimizer(CollectionRepository())
-        val skinsA = mutableListOf<Skin>(
-            Skin(
-                "Nova Rising Skull",
-                "Nova Rising Skull",
-                mutableMapOf(
-                    CSWear.FACTORY_NEW to 8.55,
-                    CSWear.MINIMAL_WEAR to 5.98,
-                    CSWear.FIELD_TESTED to 5.15,
-                    CSWear.WELL_WORN to 5.53,
-                    CSWear.BATTLE_SCARRED to 5.57
-                ),
-                "Recoil_Case",
-                0.0,
-                0.5
-            )
-        )
-        val skinsB = mutableListOf<Skin>(
-            Skin(
-                "Nova Rising Skull",
-                "Nova Rising Skull",
-                mutableMapOf(
-                    CSWear.FACTORY_NEW to 8.55,
-                    CSWear.MINIMAL_WEAR to 5.98,
-                    CSWear.FIELD_TESTED to 5.15,
-                    CSWear.WELL_WORN to 5.53,
-                    CSWear.BATTLE_SCARRED to 5.57
-                ),
-                "Recoil_Case",
-                0.0,
-                0.5
-            )
-        )
-        val outputSkins = mutableListOf<Skin>(
-            Skin(
-                "AWP Redline",
-                "AWP Redline",
-                mutableMapOf(
-                    CSWear.MINIMAL_WEAR to 93.62,
-                    CSWear.FIELD_TESTED to 48.50,
-                    CSWear.WELL_WORN to 66.36,
-                ),
-                "Recoil_Case",
-                0.1,
-                0.4
-            ),
-            Skin(
-                "M4A1-S Guardian",
-                "M4A1-S Guardian",
-                mutableMapOf(
-                    CSWear.FACTORY_NEW to 57.16,
-                    CSWear.MINIMAL_WEAR to 31.14,
-                    CSWear.FIELD_TESTED to 24.73,
-                    CSWear.WELL_WORN to 21.81,
-                    CSWear.BATTLE_SCARRED to 23.18
-                ),
-                "Recoil_Case",
-                0.0,
-                0.5
-            ),
-            Skin(
-                "P250 Mehndi",
-                "P250 Mehndi",
-                mutableMapOf(
-                    CSWear.FACTORY_NEW to 30.81,
-                    CSWear.MINIMAL_WEAR to 16.71,
-                    CSWear.FIELD_TESTED to 14.30,
-                    CSWear.WELL_WORN to 11.22,
-                    CSWear.BATTLE_SCARRED to 11.08
-                ),
-                "Recoil_Case",
-                0.0,
-                1.0
-            ),
-        )
-
-        val outputFloats = tradeUpOptimizer.calculateOutputfloats(outputSkins)
-
-        outputFloats.forEach { outputFloat ->
-            var bestTradeUpInputForOutputFloat: TradeUpInput? = null
-            val tradeUpOutput: TradeUpOutput = tradeUpOptimizer.calculateTradeUpOutput(outputSkins, outputFloat)
-
-            for (j in 1..9) {
-                skinsA.forEach { skinA ->
-                    skinsB.forEach { skinB ->
-                        val tradeUpInputComponentA =
-                            TradeUpInputComponent(skinA, j, skinA.collectionId)
-                        val tradeUpInputComponentB =
-                            TradeUpInputComponent(skinB, 10 - j, skinB.collectionId)
-
-                        val tradeUpInput: CostsFloatInput? =
-                            TradeUpInput(tradeUpInputComponentA, tradeUpInputComponentB)
-                                .calculateBestFloats(outputFloat).values.minByOrNull { it.costs }
-
-                        if (tradeUpInput != null &&
-                            (tradeUpInput.costs < (bestTradeUpInputForOutputFloat?.costsFloatInput?.costs
-                                ?: Double.POSITIVE_INFINITY))
-                        ) {
-
-                            bestTradeUpInputForOutputFloat = TradeUpInput(
-                                tradeUpInputComponentA,
-                                tradeUpInputComponentB,
-                                tradeUpInput
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (bestTradeUpInputForOutputFloat != null) {
-                val tradeUp = TradeUp(
-                    bestTradeUpInputForOutputFloat,
-                    tradeUpOutput
-                )
-                println("${tradeUp.input.tradeUpInputComponentA.amount}x ${tradeUp.input.tradeUpInputComponentA.skin.name} - ${tradeUp.input.costsFloatInput!!.floatA} || " +
-                        "${tradeUp.input.tradeUpInputComponentB.amount}x ${tradeUp.input.tradeUpInputComponentB.skin.name} - ${tradeUp.input.costsFloatInput.floatB} || " +
-                        "float $outputFloat | roi ${tradeUp.roiWithDropChange} | profit ${tradeUp.profit}")
-
-            }
-        }
-    }
-
 }

@@ -1,4 +1,4 @@
-<!-- src/main/resources/logback.xml -->
+<!-- src/de.nogaemer.cs2skinsv2.main/resources/logback.xml -->
 <configuration>
     <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>

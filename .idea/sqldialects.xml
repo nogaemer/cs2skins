@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="SqlDialectMappings">
-    <file url="file://$PROJECT_DIR$/migrations/001_timescaledb_init.sql" dialect="PostgreSQL" />
-    <file url="file://$PROJECT_DIR$/migrations/002_dev_rebuild.sql" dialect="PostgreSQL" />
-    <file url="file://$PROJECT_DIR$/migrations/002_timescaledb_hypertables.sql" dialect="PostgreSQL" />
-    <file url="file://$PROJECT_DIR$/migrations/003_compression_retention.sql" dialect="PostgreSQL" />
-    <file url="file://$PROJECT_DIR$/migrations/004_add_price_sources_currencies.sql" dialect="PostgreSQL" />
-    <file url="file://$PROJECT_DIR$/migrations/005_price_history_index.sql" dialect="PostgreSQL" />
-    <file url="file://$PROJECT_DIR$/migrations/006_add_risk_columns_to_snapshots.sql" dialect="PostgreSQL" />
-    <file url="file://$PROJECT_DIR$/migrations/007_create_tradeup_daily_aggregate.sql" dialect="PostgreSQL" />
-    <file url="file://$PROJECT_DIR$/migrations/008_create_skin_price_daily_aggregate.sql" dialect="PostgreSQL" />
-    <file url="file://$PROJECT_DIR$/src/main/kotlin/com/nogaemer/cs2skins/Application.kt" dialect="PostgreSQL" />
-    <file url="file://$PROJECT_DIR$/src/main/kotlin/com/nogaemer/cs2skins/service/TradeUpService.kt" dialect="PostgreSQL" />
-    <file url="PROJECT" dialect="PostgreSQL" />
-  </component>
-  <component name="SqlResolveMappings">
-    <file url="file://$PROJECT_DIR$/src/main/kotlin/database/Tables.kt" scope="{&quot;node&quot;:{  &quot;@negative&quot;:&quot;1&quot;,  &quot;group&quot;:{   &quot;@kind&quot;:&quot;root&quot;,   &quot;node&quot;:{    &quot;@negative&quot;:&quot;1&quot;   }  } }}" />
-    <file url="PROJECT" scope="{&quot;node&quot;:{  &quot;@negative&quot;:&quot;1&quot;,  &quot;group&quot;:{   &quot;@kind&quot;:&quot;root&quot;,   &quot;node&quot;:{    &quot;name&quot;:{     &quot;@qname&quot;:&quot;1039486e-81fc-485d-b455-3ae7a66f774e&quot;    },    &quot;group&quot;:{     &quot;@kind&quot;:&quot;database&quot;,     &quot;node&quot;:{      &quot;name&quot;:{       &quot;@qname&quot;:&quot;postgres&quot;      }     }    }   }  } }}" />
+    <file url="file://$PROJECT_DIR$/infra/clickhouse" dialect="ClickHouse" />
+    <file url="file://$PROJECT_DIR$/infra/clickhouse/init/002_tables.sql" dialect="ClickHouse" />
+    <file url="file://$PROJECT_DIR$/infra/clickhouse/init/003_views.sql" dialect="ClickHouse" />
+    <file url="file://$PROJECT_DIR$/infra/clickhouse/init/004_add_input_wear_buckets.sql" dialect="ClickHouse" />
+    <file url="file://$PROJECT_DIR$/infra/clickhouse/init/005_recipe_uuid_key_clickhouse.sql" dialect="ClickHouse" />
+    <file url="file://$PROJECT_DIR$/infra/clickhouse/init/006_add_rating_columns.sql" dialect="ClickHouse" />
+    <file url="file://$PROJECT_DIR$/infra/clickhouse/init/007_price_history_openskin_metrics.sql" dialect="ClickHouse" />
+    <file url="file://$PROJECT_DIR$/infra/clickhouse/reset_clickhouse_dev_data.sql" dialect="ClickHouse" />
+    <file url="file://$PROJECT_DIR$/infra/postgres" dialect="PostgreSQL" />
+    <file url="file://$PROJECT_DIR$/infra/postgres/init/002_schema.sql" dialect="PostgreSQL" />
+    <file url="file://$PROJECT_DIR$/infra/postgres/init/003_seed_reference.sql" dialect="PostgreSQL" />
+    <file url="file://$PROJECT_DIR$/infra/postgres/init/004_deterministic_catalog_ids.sql" dialect="PostgreSQL" />
+    <file url="file://$PROJECT_DIR$/infra/postgres/init/005_recipe_uuid_key_postgres.sql" dialect="PostgreSQL" />
+    <file url="file://$PROJECT_DIR$/infra/postgres/init/006_openskin_metrics.sql" dialect="PostgreSQL" />
+    <file url="file://$PROJECT_DIR$/infra/postgres/init/007_best_tradeup_by_skin_pair.sql" dialect="PostgreSQL" />
+    <file url="file://$PROJECT_DIR$/src/main/kotlin/de/nogaemer/cs2skinsv2/catalog/repository/CatalogRepository.kt" dialect="PostgreSQL" />
   </component>
 </project>
