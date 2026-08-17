@@ -2,6 +2,7 @@ package database.clickhouse
 
 import java.sql.Connection
 import java.time.Instant
+import java.util.*
 
 class TradeupOutcomeSnapshotWriter(
     private val clickHouseClientFactory: ClickHouseClientFactory
@@ -10,7 +11,7 @@ class TradeupOutcomeSnapshotWriter(
     data class OutcomeRow(
         val snapshotAt: Instant,
         val runId: Long,
-        val tradeupRecipeId: Long,
+        val tradeupRecipeId: UUID,   // was Long -- Phase 2b deterministic recipe key
         val outcomeItemId: Long,
         val outcomeIndex: Int,
         val outputFloat: Float,
@@ -39,7 +40,7 @@ class TradeupOutcomeSnapshotWriter(
                 rows.forEach { row ->
                     statement.setObject(1, row.snapshotAt)
                     statement.setLong(2, row.runId)
-                    statement.setLong(3, row.tradeupRecipeId)
+                    statement.setObject(3, row.tradeupRecipeId)
                     statement.setLong(4, row.outcomeItemId)
                     statement.setInt(5, row.outcomeIndex)
                     statement.setFloat(6, row.outputFloat)

@@ -3,7 +3,6 @@ package database.postgres
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import config.AppConfig
-import org.jetbrains.exposed.sql.Database
 import javax.sql.DataSource
 
 class PostgresDatabaseFactory {
@@ -18,19 +17,12 @@ class PostgresDatabaseFactory {
         idleTimeout = 300000
         maxLifetime = 1800000
 
-        // Safe, no-tradeoff win for the batch-insert paths (seeding, price
-        // ingestion, recipe/outcome persistence): the same handful of SQL
-        // shapes get executed thousands of times with different bind values
-        // and different chunk sizes -- caching parsed/planned statements
-        // avoids re-parsing that SQL on every call.
         addDataSourceProperty("cachePrepStmts", "true")
         addDataSourceProperty("prepStmtCacheSize", "250")
         addDataSourceProperty("prepStmtCacheSqlLimit", "2048")
     })
 
-    // Exposed is only used incidentally right now -- safe to keep or drop later.
     init {
-        Database.connect(hikariDataSource)
         testConnection()
     }
 

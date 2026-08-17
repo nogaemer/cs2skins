@@ -2,22 +2,21 @@ package database.clickhouse
 
 import java.sql.Connection
 import java.time.Instant
+import java.util.*
 
-class TradeupSnapshotWriter(
-    private val clickHouseClientFactory: ClickHouseClientFactory
-) {
+class TradeupSnapshotWriter(private val clickHouseClientFactory: ClickHouseClientFactory) {
 
     data class TradeupSnapshotRow(
         val snapshotAt: Instant,
         val runId: Long,
-        val tradeupRecipeId: Long,
+        val tradeupRecipeId: UUID,
         val skin1ItemId: Long,
         val skin2ItemId: Long,
         val skin1Count: Int,
         val skin2Count: Int,
         val wearBucketId: Int,
-        val skin1WearBucketId: Int,   // NEW -- lets analytics join straight to
-        val skin2WearBucketId: Int,   // item_current_prices without recomputing CSWear
+        val skin1WearBucketId: Int,
+        val skin2WearBucketId: Int,
         val skin1Float: Float,
         val skin2Float: Float,
         val avgInputFloat: Float,
@@ -32,36 +31,31 @@ class TradeupSnapshotWriter(
         val profitChance: Float,
         val profitPercentage: Float,
         val outcomeCount: Int,
+        // New: rating (Part 2 of the DB-rating work).
+        val rating: Float,
+        val depthGate: Float,
+        val volatilityCombined7d: Float,
         val algorithmVersion: String
     )
 
     fun insertBatch(rows: List<TradeupSnapshotRow>) {
         if (rows.isEmpty()) return
-
         clickHouseClientFactory.query { connection: Connection ->
             val sql = """
                 INSERT INTO tradeups.tradeup_snapshot_raw (
-                    snapshot_at, run_id, tradeup_recipe_id,
-                    skin_1_item_id, skin_2_item_id, skin_1_count, skin_2_count,
-                    wear_bucket_id, skin_1_wear_bucket_id, skin_2_wear_bucket_id,
-                    skin_1_float, skin_2_float,
-                    average_input_float, average_raw_input_float,
-                    input_cost, input_cost_with_drop_change,
-                    expected_value, profit_abs, profit_with_drop_change,
-                    roi, roi_with_drop_change, profit_chance, profit_percentage,
-                    outcome_count, algorithm_version
-                )
-                VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )
+                    snapshot_at, run_id, tradeup_recipe_id, skin_1_item_id, skin_2_item_id,
+                    skin_1_count, skin_2_count, wear_bucket_id, skin_1_wear_bucket_id, skin_2_wear_bucket_id,
+                    skin_1_float, skin_2_float, average_input_float, average_raw_input_float,
+                    input_cost, input_cost_with_drop_change, expected_value, profit_abs, profit_with_drop_change,
+                    roi, roi_with_drop_change, profit_chance, profit_percentage, outcome_count,
+                    rating, depth_gate, volatility_combined_7d, algorithm_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
-
             connection.prepareStatement(sql).use { statement ->
                 rows.forEach { row ->
                     statement.setObject(1, row.snapshotAt)
                     statement.setLong(2, row.runId)
-                    statement.setLong(3, row.tradeupRecipeId)
+                    statement.setObject(3, row.tradeupRecipeId)
                     statement.setLong(4, row.skin1ItemId)
                     statement.setLong(5, row.skin2ItemId)
                     statement.setInt(6, row.skin1Count)
@@ -83,10 +77,12 @@ class TradeupSnapshotWriter(
                     statement.setFloat(22, row.profitChance)
                     statement.setFloat(23, row.profitPercentage)
                     statement.setInt(24, row.outcomeCount)
-                    statement.setString(25, row.algorithmVersion)
+                    statement.setFloat(25, row.rating)
+                    statement.setFloat(26, row.depthGate)
+                    statement.setFloat(27, row.volatilityCombined7d)
+                    statement.setString(28, row.algorithmVersion)
                     statement.addBatch()
                 }
-
                 statement.executeBatch()
             }
         }

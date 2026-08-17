@@ -17,6 +17,7 @@ class TradeUpOptimizer(
     private val runRepository: CalculatorRunRepository,
     private val snapshotWriter: TradeupSnapshotWriter,
     private val outcomeWriter: TradeupOutcomeSnapshotWriter,
+    private val bestTradeUpByPairRepository: BestTradeUpByPairRepository,
     private val algorithmVersion: String = "1.0.0"
 ) {
 
@@ -36,6 +37,12 @@ class TradeUpOptimizer(
     }
 
     private val gameId: Short by lazy { catalogRepository.findGameId("cs2") }
+
+    private val currentPriceByItemAndWear: Map<Pair<Long, Short>, CurrentPrice> by lazy {
+        catalogRepository.findAllCurrentPrices()
+            .groupBy { it.itemId to it.wearBucketId }
+            .mapValues { (_, rows) -> rows.maxBy { it.observedAt } }
+    }
 
     private val skinCache = ConcurrentHashMap<Long, Skin>()
 
@@ -87,7 +94,7 @@ class TradeUpOptimizer(
                 val filled = (percent / 100.0 * barWidth).toInt().coerceIn(0, barWidth)
                 val bar = "=".repeat(filled) + " ".repeat(barWidth - filled)
                 print(
-                    "\r[$bar] %6.2f%% (%d/%d pairs) | %d recipes persisted   ".format(
+                    "\r[$bar] %6.2f%% (%d/%d pairs) | %d recipes persisted ".format(
                         percent, done, totalPairs, totalPersisted.get()
                     )
                 )
@@ -122,6 +129,9 @@ class TradeUpOptimizer(
 
             println()
             runRepository.finishRun(runId, "SUCCESS", totalPersisted.get())
+
+            println("Refreshing best_tradeup_by_skin_pair...")
+            bestTradeUpByPairRepository.refresh()
         } catch (e: Exception) {
             println()
             runRepository.finishRun(runId, "FAILED", totalPersisted.get(), e.message)
@@ -225,7 +235,7 @@ class TradeUpOptimizer(
                                             costsFloatInput.floatA,
                                             costsFloatInput.floatB,
                                             skin1WearBucketIdRaw,
-                                            skin2WearBucketIdRaw          // <-- NEW, same order as floats
+                                            skin2WearBucketIdRaw
                                         )
                                     } else {
                                         OrderedRecipeInput(
@@ -236,7 +246,7 @@ class TradeUpOptimizer(
                                             costsFloatInput.floatB,
                                             costsFloatInput.floatA,
                                             skin2WearBucketIdRaw,
-                                            skin1WearBucketIdRaw          // <-- NEW, swapped with the floats
+                                            skin1WearBucketIdRaw
                                         )
                                     }
 
@@ -275,16 +285,40 @@ class TradeUpOptimizer(
         val pendingCandidates = bestCandidateByGroup.values.toList()
         if (pendingCandidates.isEmpty()) return 0
 
-        val recipeIdsByHash = recipeRepository.upsertRecipesBatch(
-            pendingCandidates.map { it.recipeInput }
-        )
+        recipeRepository.upsertRecipesBatch(pendingCandidates.map { it.recipeInput })
 
         pendingCandidates.forEach { candidate ->
-            val recipeId = recipeIdsByHash[candidate.recipeInput.canonicalHashHex] ?: return@forEach
+            val recipeId = candidate.recipeInput.recipeKey
             val orderedInput = candidate.orderedInput
             val tradeUp = candidate.tradeUp
             val tradeUpOutput = candidate.tradeUpOutput
             val outputFloat = candidate.outputFloat
+
+            // gather market metrics for both input legs and every
+            // possible output, then compute the rating. Both legs use the
+            // ordered (skin1/skin2) view so requiredQty lines up with the
+            // metrics for the same physical item.
+            val inputMetricsA = findMetrics(orderedInput.skin1ItemId, orderedInput.skin1WearBucketId)
+            val inputMetricsB = findMetrics(orderedInput.skin2ItemId, orderedInput.skin2WearBucketId)
+            val outputMetricsList = tradeUpOutput.skins.map { outcomeSkin ->
+                val outFloat = outcomeSkin.float
+                val outItemId = outcomeSkin.itemId
+                val outWearBucketId = outFloat?.let { wearBucketIdByCswear[CSWear.floatToCSWear(it)] }
+                if (outItemId == null || outWearBucketId == null) {
+                    SkinMarketMetrics(null, null, null, null, null, null)
+                } else {
+                    findMetrics(outItemId, outWearBucketId)
+                }
+            }
+
+            val ratingResult = RatingCalculator.calculate(
+                tradeUp = tradeUp,
+                inputA = inputMetricsA,
+                inputB = inputMetricsB,
+                requiredQtyA = orderedInput.skin1Count,
+                requiredQtyB = orderedInput.skin2Count,
+                outputMetrics = outputMetricsList
+            )
 
             snapshotBatch.add(
                 TradeupSnapshotWriter.TradeupSnapshotRow(
@@ -312,6 +346,9 @@ class TradeUpOptimizer(
                     profitChance = tradeUp.profitChance.toFloat(),
                     profitPercentage = tradeUp.profitPercentage.toFloat(),
                     outcomeCount = tradeUpOutput.skins.size,
+                    rating = ratingResult.rating.toFloat(),
+                    depthGate = ratingResult.depthGate.toFloat(),
+                    volatilityCombined7d = ratingResult.volatilityCombined7d.toFloat(),
                     algorithmVersion = algorithmVersion
                 )
             )
@@ -356,7 +393,6 @@ class TradeUpOptimizer(
         recipeOutcomeRepository.upsertOutcomesBatch(recipeOutcomeBatch)
         snapshotWriter.insertBatch(snapshotBatch)
         outcomeWriter.insertBatch(outcomeBatch)
-
         return persisted
     }
 
@@ -394,7 +430,7 @@ class TradeUpOptimizer(
 
         val priceMap = CSWear.entries.mapNotNull { wear ->
             val wearBucketId = wearBucketIdByCswear[wear] ?: return@mapNotNull null
-            val price = catalogRepository.findCurrentPrice(item.id, wearBucketId) ?: return@mapNotNull null
+            val price = currentPriceByItemAndWear[item.id to wearBucketId] ?: return@mapNotNull null
             wear to price.averagePrice.toDouble()
         }.toMap().toMutableMap()
 
@@ -409,6 +445,24 @@ class TradeUpOptimizer(
 
         skinCache[item.id] = skin
         return skin
+    }
+
+    /**
+     * New: fetches (and caches) the market-microstructure metrics for a
+     * given item at a given wear bucket, for RatingCalculator. Falls back to
+     * an all-null SkinMarketMetrics (which RatingCalculator treats via its
+     * own conservative placeholders) if no price row exists yet.
+     */
+    private fun findMetrics(itemId: Long, wearBucketId: Short): SkinMarketMetrics {
+        val price = currentPriceByItemAndWear[itemId to wearBucketId]
+        return SkinMarketMetrics(
+            liquidityScore = price?.liquidityScore,
+            spreadPct = price?.spreadPct,
+            slippagePct = price?.slippagePct,
+            priceImpact5Pct = price?.priceImpact5Pct,
+            priceImpact10Pct = price?.priceImpact10Pct,
+            volatility7d = price?.volatility7d
+        )
     }
 
     private fun getCollectionWithItems(collection: Collection, stattrak: Boolean): CollectionWithItems {

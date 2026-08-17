@@ -2,14 +2,16 @@ package database.postgres
 
 import java.nio.ByteBuffer
 import java.security.MessageDigest
+import java.util.*
 
 /**
- * Deterministic surrogate-key derivation for catalog entities.
+ * Deterministic surrogate-key derivation for catalog entities and recipes.
  *
- * MUST stay byte-for-byte identical to the SQL functions `deterministic_id`
- * and `deterministic_id_16` in 004_deterministic_catalog_ids.sql. If you
- * change either implementation, change both, or ids computed by the app
- * will disagree with ids computed during migration/backfill.
+ * The catalog helpers (deterministicId / deterministicId16 / rarityId) MUST
+ * stay byte-for-byte identical to the SQL functions of the same name in
+ * 004_deterministic_catalog_ids.sql. recipeKey has no SQL-side equivalent --
+ * it's computed entirely in Kotlin and inserted as a literal value, which is
+ * the whole point of Phase 2b (no round trip needed to learn a recipe's id).
  */
 object KeyDerivation {
 
@@ -31,8 +33,6 @@ object KeyDerivation {
      * The 6 weapon-skin rarity tiers are curated, not hashed -- this id
      * propagates directly into tradeup_recipes (millions of rows), so it
      * gets a fixed, zero-collision assignment instead of hash odds.
-     * Keep this in sync with PostgresSeedService.rarityOrder and with
-     * rarity_id_map's CASE expression in the SQL migration.
      */
     private val curatedRarityIds: Map<String, Short> = mapOf(
         "Consumer Grade" to 1,
@@ -45,4 +45,17 @@ object KeyDerivation {
 
     fun rarityId(name: String, externalId: String): Short =
         curatedRarityIds[name] ?: deterministicId16(externalId)
+
+    /**
+     * Deterministic recipe identity (Phase 2b) -- the first 16 bytes of a
+     * recipe's canonical_hash (SHA-256 hex string), reinterpreted as a UUID.
+     * Same logical recipe (same skins/counts/wear bucket) always produces
+     * the same UUID, regardless of insert order or a crash-and-regenerate
+     * cycle, and needs zero database round trip to compute.
+     */
+    fun recipeKey(canonicalHashHex: String): UUID {
+        val mostSigBits = java.lang.Long.parseUnsignedLong(canonicalHashHex.substring(0, 16), 16)
+        val leastSigBits = java.lang.Long.parseUnsignedLong(canonicalHashHex.substring(16, 32), 16)
+        return UUID(mostSigBits, leastSigBits)
+    }
 }

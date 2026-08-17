@@ -10,7 +10,7 @@ data class Collection(
     val imageUrl: String?
 )
 
-// Weapon no longer carries a serial `id` -- external_id IS the primary key now.
+// Weapon no longer carries a serial id -- externalId IS the primary key now.
 data class Weapon(
     val externalId: String,
     val name: String,
@@ -30,7 +30,7 @@ data class Item(
     val externalId: String,
     val marketHashName: String,
     val name: String,
-    val weaponId: String?,   // was Short? -- now matches weapons.external_id (TEXT)
+    val weaponId: String?, // matches weapons.external_id TEXT
     val collectionId: Long?,
     val rarityId: Short?,
     val patternId: String?,
@@ -52,6 +52,14 @@ data class WearBucket(
     val probability: Double
 )
 
+/**
+ * Phase "rating" addition: spread/slippage/price-impact/volatility, sourced
+ * from openskin.dev's per-item-per-wear microstructure metrics. All nullable
+ * because openskin can return partial data (e.g. price_impact is omitted
+ * entirely when there isn't enough order-book depth to fill that quantity --
+ * that's a meaningful signal in itself, not missing data, and is treated as
+ * such by RatingCalculator).
+ */
 data class CurrentPrice(
     val itemId: Long,
     val wearBucketId: Short,
@@ -61,5 +69,11 @@ data class CurrentPrice(
     val volume24h: Int,
     val buyPrice: BigDecimal? = null,
     val sellPrice: BigDecimal? = null,
-    val liquidityScore: Double? = null
+    val liquidityScore: Double? = null,
+    val spreadPct: Double? = null,
+    val slippagePct: Double? = null,
+    val priceImpact5Pct: Double? = null,
+    val priceImpact10Pct: Double? = null,
+    val volatility1d: Double? = null,
+    val volatility7d: Double? = null
 )

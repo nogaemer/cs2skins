@@ -9,6 +9,90 @@ class CatalogRepository(
     private val dataSource: DataSource
 ) {
 
+    data class PriceSource(val id: Short, val code: String, val name: String, val currencyCode: String)
+
+    data class ItemUpsertRow(
+        val item: Item,
+        val collectionId: Long,
+        val weaponId: String,
+        val rarityId: Short
+    )
+
+    data class ItemWearRow(val itemId: Long, val wearCode: String)
+
+    data class CurrentPriceRow(
+        val itemId: Long,
+        val wearCode: String,
+        val priceSourceCode: String,
+        val averagePrice: BigDecimal,
+        val volume24h: Int,
+        val listings: Int = 0,
+        val buyPrice: BigDecimal? = null,
+        val sellPrice: BigDecimal? = null,
+        val liquidityScore: Double? = null,
+        val spreadPct: Double? = null,
+        val slippagePct: Double? = null,
+        val priceImpact5Pct: Double? = null,
+        val priceImpact10Pct: Double? = null,
+        val volatility1d: Double? = null,
+        val volatility7d: Double? = null,
+        val observedAt: OffsetDateTime = OffsetDateTime.now()
+    )
+
+    private data class ResolvedPriceRow(
+        val itemId: Long, val wearBucketId: Short, val priceSourceId: Short,
+        val observedAt: OffsetDateTime, val buyPrice: BigDecimal?, val sellPrice: BigDecimal?,
+        val averagePrice: BigDecimal, val volume24h: Int, val listings: Int, val liquidityScore: Double?
+    )
+
+    data class SteamMetricsUpdate(
+        val itemId: Long,
+        val wearBucketId: Short,
+        val spreadPct: Double?,
+        val slippagePct: Double?,
+        val priceImpact5Pct: Double?,
+        val priceImpact10Pct: Double?,
+        val volatility1d: Double?,
+        val volatility7d: Double?
+    )
+
+    fun updateSteamMetricsBatch(rows: List<SteamMetricsUpdate>) {
+        if (rows.isEmpty()) return
+        val steamSourceId = findAllPriceSources().firstOrNull { it.code == "steam" }?.id
+            ?: error("Price source 'steam' not found in price_sources table")
+
+        val sql = """
+        UPDATE item_current_prices SET
+            spread_pct = ?,
+            slippage_pct = ?,
+            price_impact_5_pct = ?,
+            price_impact_10_pct = ?,
+            volatility_1d = ?,
+            volatility_7d = ?
+        WHERE item_id = ? AND wear_bucket_id = ? AND price_source_id = ?
+    """.trimIndent()
+
+        rows.chunked(500).forEach { chunk ->
+            dataSource.connection.use { conn ->
+                conn.prepareStatement(sql).use { statement ->
+                    chunk.forEach { row ->
+                        setNullableDouble(statement, 1, row.spreadPct)
+                        setNullableDouble(statement, 2, row.slippagePct)
+                        setNullableDouble(statement, 3, row.priceImpact5Pct)
+                        setNullableDouble(statement, 4, row.priceImpact10Pct)
+                        setNullableDouble(statement, 5, row.volatility1d)
+                        setNullableDouble(statement, 6, row.volatility7d)
+                        statement.setLong(7, row.itemId)
+                        statement.setShort(8, row.wearBucketId)
+                        statement.setShort(9, steamSourceId)
+                        statement.addBatch()
+                    }
+                    statement.executeBatch()
+                }
+            }
+        }
+    }
+
     fun upsertCollection(collection: Collection): Long {
         val id = KeyDerivation.deterministicId(collection.externalId)
         val sql = """
@@ -184,47 +268,55 @@ class CatalogRepository(
         buyPrice: BigDecimal? = null,
         sellPrice: BigDecimal? = null,
         liquidityScore: Double? = null,
+        spreadPct: Double? = null,
+        slippagePct: Double? = null,
+        priceImpact5Pct: Double? = null,
+        priceImpact10Pct: Double? = null,
+        volatility1d: Double? = null,
+        volatility7d: Double? = null,
         observedAt: OffsetDateTime = OffsetDateTime.now()
     ): Int {
         val sql = """
         INSERT INTO item_current_prices (
-            item_id, wear_bucket_id, price_source_id,
-            observed_at, buy_price, sell_price, average_price,
-            volume_24h, liquidity_score
+            item_id, wear_bucket_id, price_source_id, observed_at,
+            buy_price, sell_price, average_price, volume_24h, liquidity_score,
+            spread_pct, slippage_pct, price_impact_5_pct, price_impact_10_pct,
+            volatility_1d, volatility_7d
         )
-        SELECT ?, wb.id, ps.id, ?, ?, ?, ?, ?, ?
-        FROM wear_buckets wb
-        CROSS JOIN price_sources ps
+        SELECT ?, wb.id, ps.id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        FROM wear_buckets wb CROSS JOIN price_sources ps
         WHERE wb.code = ? AND ps.code = ?
-        ON CONFLICT (item_id, wear_bucket_id, price_source_id)
-        DO UPDATE SET
+        ON CONFLICT (item_id, wear_bucket_id, price_source_id) DO UPDATE SET
             observed_at = EXCLUDED.observed_at,
             buy_price = EXCLUDED.buy_price,
             sell_price = EXCLUDED.sell_price,
             average_price = EXCLUDED.average_price,
             volume_24h = EXCLUDED.volume_24h,
-            liquidity_score = EXCLUDED.liquidity_score
+            liquidity_score = EXCLUDED.liquidity_score,
+            spread_pct = EXCLUDED.spread_pct,
+            slippage_pct = EXCLUDED.slippage_pct,
+            price_impact_5_pct = EXCLUDED.price_impact_5_pct,
+            price_impact_10_pct = EXCLUDED.price_impact_10_pct,
+            volatility_1d = EXCLUDED.volatility_1d,
+            volatility_7d = EXCLUDED.volatility_7d
     """.trimIndent()
-
         return dataSource.connection.use { conn ->
             conn.prepareStatement(sql).use { statement ->
                 statement.setLong(1, itemId)
                 statement.setObject(2, observedAt)
-
                 if (buyPrice == null) statement.setNull(3, Types.NUMERIC) else statement.setBigDecimal(3, buyPrice)
                 if (sellPrice == null) statement.setNull(4, Types.NUMERIC) else statement.setBigDecimal(4, sellPrice)
-
                 statement.setBigDecimal(5, averagePrice)
                 statement.setInt(6, volume24h)
-
-                if (liquidityScore == null) {
-                    statement.setNull(7, Types.NUMERIC)
-                } else {
-                    statement.setBigDecimal(7, BigDecimal.valueOf(liquidityScore))
-                }
-
-                statement.setString(8, wearId)
-                statement.setString(9, priceSourceCode)
+                setNullableDouble(statement, 7, liquidityScore)
+                setNullableDouble(statement, 8, spreadPct)
+                setNullableDouble(statement, 9, slippagePct)
+                setNullableDouble(statement, 10, priceImpact5Pct)
+                setNullableDouble(statement, 11, priceImpact10Pct)
+                setNullableDouble(statement, 12, volatility1d)
+                setNullableDouble(statement, 13, volatility7d)
+                statement.setString(14, wearId)
+                statement.setString(15, priceSourceCode)
                 statement.executeUpdate()
             }
         }
@@ -328,32 +420,82 @@ class CatalogRepository(
         }
     }
 
-    fun findCurrentPrice(itemId: Long, wearBucketId: Short): CurrentPrice? {
+    fun findCurrentPrice(itemId: Long, wearBucketId: Short, priceSourceId: Short? = null): CurrentPrice? {
         val sql = """
-            SELECT item_id, wear_bucket_id, price_source_id,
-                   observed_at, average_price, volume_24h
-            FROM item_current_prices
-            WHERE item_id = ? AND wear_bucket_id = ?
-            ORDER BY observed_at DESC
-            LIMIT 1
-        """.trimIndent()
-
+        SELECT item_id, wear_bucket_id, price_source_id, observed_at,
+               buy_price, sell_price, average_price, volume_24h, liquidity_score,
+               spread_pct, slippage_pct, price_impact_5_pct, price_impact_10_pct,
+               volatility_1d, volatility_7d
+        FROM item_current_prices
+        WHERE item_id = ? AND wear_bucket_id = ?
+          AND (? IS NULL OR price_source_id = ?)
+        ORDER BY observed_at DESC
+        LIMIT 1
+    """.trimIndent()
         return dataSource.connection.use { conn ->
             conn.prepareStatement(sql).use { statement ->
                 statement.setLong(1, itemId)
                 statement.setShort(2, wearBucketId)
-
+                if (priceSourceId == null) statement.setNull(3, Types.SMALLINT) else statement.setShort(3, priceSourceId)
+                if (priceSourceId == null) statement.setNull(4, Types.SMALLINT) else statement.setShort(4, priceSourceId)
                 statement.executeQuery().use { result ->
                     if (!result.next()) return@use null
-
                     CurrentPrice(
                         itemId = result.getLong("item_id"),
                         wearBucketId = result.getShort("wear_bucket_id"),
                         priceSourceId = result.getShort("price_source_id"),
                         observedAt = result.getObject("observed_at", OffsetDateTime::class.java),
                         averagePrice = result.getBigDecimal("average_price"),
-                        volume24h = result.getInt("volume_24h")
+                        volume24h = result.getInt("volume_24h"),
+                        buyPrice = result.getBigDecimal("buy_price"),
+                        sellPrice = result.getBigDecimal("sell_price"),
+                        liquidityScore = result.getBigDecimal("liquidity_score")?.toDouble(),
+                        spreadPct = result.getBigDecimal("spread_pct")?.toDouble(),
+                        slippagePct = result.getBigDecimal("slippage_pct")?.toDouble(),
+                        priceImpact5Pct = result.getBigDecimal("price_impact_5_pct")?.toDouble(),
+                        priceImpact10Pct = result.getBigDecimal("price_impact_10_pct")?.toDouble(),
+                        volatility1d = result.getBigDecimal("volatility_1d")?.toDouble(),
+                        volatility7d = result.getBigDecimal("volatility_7d")?.toDouble()
                     )
+                }
+            }
+        }
+    }
+
+    fun findAllCurrentPrices(): List<CurrentPrice> {
+        val sql = """
+        SELECT item_id, wear_bucket_id, price_source_id, observed_at,
+               buy_price, sell_price, average_price, volume_24h, liquidity_score,
+               spread_pct, slippage_pct, price_impact_5_pct, price_impact_10_pct,
+               volatility_1d, volatility_7d
+        FROM item_current_prices
+    """.trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.executeQuery().use { result ->
+                    val list = mutableListOf<CurrentPrice>()
+                    while (result.next()) {
+                        list.add(
+                            CurrentPrice(
+                                itemId = result.getLong("item_id"),
+                                wearBucketId = result.getShort("wear_bucket_id"),
+                                priceSourceId = result.getShort("price_source_id"),
+                                observedAt = result.getObject("observed_at", OffsetDateTime::class.java),
+                                averagePrice = result.getBigDecimal("average_price"),
+                                volume24h = result.getInt("volume_24h"),
+                                buyPrice = result.getBigDecimal("buy_price"),
+                                sellPrice = result.getBigDecimal("sell_price"),
+                                liquidityScore = result.getBigDecimal("liquidity_score")?.toDouble(),
+                                spreadPct = result.getBigDecimal("spread_pct")?.toDouble(),
+                                slippagePct = result.getBigDecimal("slippage_pct")?.toDouble(),
+                                priceImpact5Pct = result.getBigDecimal("price_impact_5_pct")?.toDouble(),
+                                priceImpact10Pct = result.getBigDecimal("price_impact_10_pct")?.toDouble(),
+                                volatility1d = result.getBigDecimal("volatility_1d")?.toDouble(),
+                                volatility7d = result.getBigDecimal("volatility_7d")?.toDouble()
+                            )
+                        )
+                    }
+                    list
                 }
             }
         }
@@ -436,31 +578,6 @@ class CatalogRepository(
         stattrak = result.getBoolean("stattrak"),
         souvenir = result.getBoolean("souvenir"),
         imageUrl = result.getString("image_url")
-    )
-
-    data class PriceSource(val id: Short, val code: String, val name: String, val currencyCode: String)
-
-// (append inside class CatalogRepository)
-
-    data class ItemUpsertRow(
-        val item: Item,
-        val collectionId: Long,
-        val weaponId: String,
-        val rarityId: Short
-    )
-
-    data class ItemWearRow(val itemId: Long, val wearCode: String)
-
-    data class CurrentPriceRow(
-        val itemId: Long,
-        val wearCode: String,
-        val priceSourceCode: String,
-        val averagePrice: BigDecimal,
-        val volume24h: Int,
-        val buyPrice: BigDecimal? = null,
-        val sellPrice: BigDecimal? = null,
-        val liquidityScore: Double? = null,
-        val observedAt: OffsetDateTime = OffsetDateTime.now()
     )
 
     fun findAllPriceSources(): List<PriceSource> {
@@ -583,6 +700,8 @@ class CatalogRepository(
     }
 
     private fun upsertItemsChunk(chunk: List<ItemUpsertRow>, gameId: Short) {
+        cleanupStaleMarketHashNameCollisions(chunk)
+
         val valuesSql = chunk.joinToString(",") { "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)" }
         val sql = """
         INSERT INTO items (
@@ -632,6 +751,39 @@ class CatalogRepository(
         }
     }
 
+    /**
+     * Deletes any existing row whose market_hash_name collides with a row about
+     * to be inserted/updated in this chunk, but whose external_id differs --
+     * i.e. a stale duplicate left over from a previous run under an old id.
+     * Safe: item_wear_availability / item_current_prices / tradeup_recipes /
+     * tradeup_recipe_outcomes all cascade or are already empty post-migration,
+     * so deleting a stale item row here doesn't orphan anything live.
+     */
+    private fun cleanupStaleMarketHashNameCollisions(chunk: List<ItemUpsertRow>) {
+        val valuesSql = chunk.joinToString(",") { "(?,?)" }
+        val sql = """
+        DELETE FROM items i
+        USING (VALUES $valuesSql) AS v(market_hash_name, external_id)
+        WHERE i.market_hash_name = v.market_hash_name
+          AND i.external_id <> v.external_id
+    """.trimIndent()
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                var index = 1
+                chunk.forEach { row ->
+                    statement.setString(index++, row.item.marketHashName)
+                    statement.setString(index++, row.item.externalId)
+                }
+                val deleted = statement.executeUpdate()
+                if (deleted > 0) {
+                    println("Cleaned up $deleted stale item row(s) with colliding market_hash_name from a previous run")
+                }
+            }
+        }
+    }
+
+
     fun upsertItemWearAvailabilityBatch(rows: List<ItemWearRow>) {
         if (rows.isEmpty()) return
         val wearIdByCode = findAllWearBuckets().associate { it.code to it.id }
@@ -669,23 +821,20 @@ class CatalogRepository(
         val resolved = rows.mapNotNull { r ->
             val wearId = wearIdByCode[r.wearCode] ?: return@mapNotNull null
             val sourceId = sourceIdByCode[r.priceSourceCode] ?: return@mapNotNull null
-            ResolvedPriceRow(r.itemId, wearId, sourceId, r.observedAt, r.buyPrice, r.sellPrice, r.averagePrice, r.volume24h, r.liquidityScore)
+            ResolvedPriceRow(
+                r.itemId, wearId, sourceId, r.observedAt, r.buyPrice, r.sellPrice,
+                r.averagePrice, r.volume24h, r.listings, r.liquidityScore
+            )
         }
         resolved.chunked(2000).forEach { upsertCurrentPricesChunk(it) }
     }
 
-    private data class ResolvedPriceRow(
-        val itemId: Long, val wearBucketId: Short, val priceSourceId: Short,
-        val observedAt: OffsetDateTime, val buyPrice: BigDecimal?, val sellPrice: BigDecimal?,
-        val averagePrice: BigDecimal, val volume24h: Int, val liquidityScore: Double?
-    )
-
     private fun upsertCurrentPricesChunk(chunk: List<ResolvedPriceRow>) {
-        val valuesSql = chunk.joinToString(",") { "(?,?,?,?,?,?,?,?,?)" }
+        val valuesSql = chunk.joinToString(",") { "(?,?,?,?,?,?,?,?,?,?)" }
         val sql = """
         INSERT INTO item_current_prices (
             item_id, wear_bucket_id, price_source_id, observed_at,
-            buy_price, sell_price, average_price, volume_24h, liquidity_score
+            buy_price, sell_price, average_price, volume_24h, listings, liquidity_score
         )
         VALUES $valuesSql
         ON CONFLICT (item_id, wear_bucket_id, price_source_id)
@@ -695,6 +844,7 @@ class CatalogRepository(
             sell_price = EXCLUDED.sell_price,
             average_price = EXCLUDED.average_price,
             volume_24h = EXCLUDED.volume_24h,
+            listings = EXCLUDED.listings,
             liquidity_score = EXCLUDED.liquidity_score
     """.trimIndent()
 
@@ -710,6 +860,7 @@ class CatalogRepository(
                     if (r.sellPrice == null) statement.setNull(index++, Types.NUMERIC) else statement.setBigDecimal(index++, r.sellPrice)
                     statement.setBigDecimal(index++, r.averagePrice)
                     statement.setInt(index++, r.volume24h)
+                    statement.setInt(index++, r.listings)
                     if (r.liquidityScore == null) statement.setNull(index++, Types.NUMERIC) else statement.setBigDecimal(index++, BigDecimal.valueOf(r.liquidityScore))
                 }
                 statement.executeUpdate()
@@ -729,5 +880,10 @@ class CatalogRepository(
 
     private fun setNullableString(statement: java.sql.PreparedStatement, index: Int, value: String?) {
         if (value == null) statement.setNull(index, Types.VARCHAR) else statement.setString(index, value)
+    }
+
+    private fun setNullableDouble(statement: java.sql.PreparedStatement, index: Int, value: Double?) {
+        if (value == null) statement.setNull(index, Types.NUMERIC)
+        else statement.setBigDecimal(index, BigDecimal.valueOf(value))
     }
 }

@@ -1,6 +1,7 @@
 package database.postgres
 
 import java.security.MessageDigest
+import java.util.*
 import javax.sql.DataSource
 
 class TradeUpRecipeRepository(
@@ -20,56 +21,51 @@ class TradeUpRecipeRepository(
     ) {
         val canonicalHashHex: String by lazy {
             val canonicalString = listOf(
-                gameId, inputRarityId, outputRarityId,
-                skin1ItemId, skin2ItemId, skin1Count, skin2Count,
-                wearBucketId, allowStattrak
-            ).joinToString("|")
-
+                gameId, inputRarityId, outputRarityId, skin1ItemId, skin2ItemId,
+                skin1Count, skin2Count, wearBucketId, allowStattrak
+            ).joinToString()
             MessageDigest.getInstance("SHA-256")
                 .digest(canonicalString.toByteArray(Charsets.UTF_8))
                 .joinToString("") { "%02x".format(it) }
         }
+
+        /**
+         * Deterministic recipe identity (Phase 2b) -- this IS
+         * tradeup_recipes.id and the ClickHouse tradeup_recipe_id join key.
+         * Computable entirely in Kotlin; callers never need to wait on a
+         * RETURNING round trip to learn it.
+         */
+        val recipeKey: UUID by lazy { KeyDerivation.recipeKey(canonicalHashHex) }
     }
 
     /**
-     * Upserts many recipes in as few round-trips as possible and returns a map from
-     * each recipe's canonical hash (hex) to its database id. Chunked to stay well
-     * under PostgreSQL's bind-parameter limit per statement.
+     * Upserts many recipes in as few round-trips as possible. No RETURNING,
+     * no hash-matching -- every caller already knows RecipeInput.recipeKey
+     * before this is ever invoked.
      */
-    fun upsertRecipesBatch(recipes: List<RecipeInput>): Map<String, Long> {
-        if (recipes.isEmpty()) return emptyMap()
-
-        val distinctRecipes = recipes.distinctBy { it.canonicalHashHex }
-        val result = mutableMapOf<String, Long>()
-
-        distinctRecipes.chunked(3000).forEach { chunk ->
-            result.putAll(upsertChunk(chunk))
-        }
-
-        return result
+    fun upsertRecipesBatch(recipes: List<RecipeInput>) {
+        if (recipes.isEmpty()) return
+        recipes.distinctBy { it.recipeKey }.chunked(3000).forEach { upsertChunk(it) }
     }
 
-    private fun upsertChunk(recipes: List<RecipeInput>): Map<String, Long> {
-        val valuesSql = recipes.joinToString(",") { "(?,?,?,?,?,?,?,?,?,?)" }
-
+    private fun upsertChunk(recipes: List<RecipeInput>) {
+        val valuesSql = recipes.joinToString(",") { "(?,?,?,?,?,?,?,?,?,?,?)" }
         val sql = """
             INSERT INTO tradeup_recipes (
-                canonical_hash, game_id, input_rarity_id, output_rarity_id,
+                id, canonical_hash, game_id, input_rarity_id, output_rarity_id,
                 skin_1_item_id, skin_2_item_id, skin_1_count, skin_2_count,
                 wear_bucket_id, allow_stattrak
             )
             VALUES $valuesSql
-            ON CONFLICT (canonical_hash) DO UPDATE SET
-                canonical_hash = EXCLUDED.canonical_hash
-            RETURNING id, canonical_hash
+            ON CONFLICT (id) DO NOTHING
         """.trimIndent()
 
-        return dataSource.connection.use { conn ->
+        dataSource.connection.use { conn ->
             conn.prepareStatement(sql).use { statement ->
                 var index = 1
                 recipes.forEach { recipe ->
-                    val hashBytes = hexToBytes(recipe.canonicalHashHex)
-                    statement.setBytes(index++, hashBytes)
+                    statement.setObject(index++, recipe.recipeKey)
+                    statement.setBytes(index++, hexToBytes(recipe.canonicalHashHex))
                     statement.setShort(index++, recipe.gameId)
                     statement.setShort(index++, recipe.inputRarityId)
                     statement.setShort(index++, recipe.outputRarityId)
@@ -80,15 +76,7 @@ class TradeUpRecipeRepository(
                     statement.setShort(index++, recipe.wearBucketId)
                     statement.setBoolean(index++, recipe.allowStattrak)
                 }
-
-                statement.executeQuery().use { rs ->
-                    val idsByHash = mutableMapOf<String, Long>()
-                    while (rs.next()) {
-                        val hashHex = rs.getBytes("canonical_hash").joinToString("") { "%02x".format(it) }
-                        idsByHash[hashHex] = rs.getLong("id")
-                    }
-                    idsByHash
-                }
+                statement.executeUpdate()
             }
         }
     }
