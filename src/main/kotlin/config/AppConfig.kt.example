@@ -1,0 +1,20 @@
+package config
+
+object AppConfig {
+    // PostgreSQL
+    const val POSTGRES_HOST = "localhost"
+    const val POSTGRES_PORT = 5432
+    const val POSTGRES_DB = "tradeups"
+    const val POSTGRES_USER = "tradeup_app"
+    const val POSTGRES_PASSWORD = "change-this-local-password" // from infra/.env
+
+    // ClickHouse
+    const val CLICKHOUSE_HOST = "localhost"
+    const val CLICKHOUSE_PORT = 8123
+    const val CLICKHOUSE_DB = "tradeups"
+    const val CLICKHOUSE_USER = "tradeup_app"
+    const val CLICKHOUSE_PASSWORD = "change-this-local-password" // from infra/.env
+
+    val postgresJdbcUrl = "jdbc:postgresql://$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB"
+    val clickhouseJdbcUrl = "jdbc:clickhouse://$CLICKHOUSE_HOST:$CLICKHOUSE_PORT/$CLICKHOUSE_DB"
+}

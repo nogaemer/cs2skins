@@ -11,6 +11,14 @@ class ProbabilityLinear(
 ) {
     fun at(x: Double): Double = m * x + b
 
+    fun invertXRanges(): ProbabilityLinear = ProbabilityLinear(
+        m = m,
+        b = b,
+        floatProbabilityPointPair = floatProbabilityPointPair,
+        minXRange = maxXRange,
+        maxXRange = minXRange
+    )
+
     fun adjust(
         avgFloat: Double,
         tradeUpInputComponentA: TradeUpInputComponent,
@@ -19,19 +27,24 @@ class ProbabilityLinear(
         val xLow = floatProbabilityPointPair.lower.float
         val xHigh = floatProbabilityPointPair.upper.float
         val mMultiplier = DropProbability.calculateMMultiplier(tradeUpInputComponentA, tradeUpInputComponentB)
-        val bSummand = DropProbability.calculateBSummand(avgFloat, tradeUpInputComponentB)
+        val bSummand = DropProbability.calculateBSummand(avgFloat, tradeUpInputComponentA, tradeUpInputComponentB)
 
-        val mAdjusted = m * (mMultiplier ?: 1.0)
-        val bAdjusted = if (bSummand != null) (bSummand - xLow) * m else b
+        val mAdjusted = m * mMultiplier
+        val bAdjusted = b + m * bSummand
+
+        val skinAFloatDifference = tradeUpInputComponentA.skin.floatCapDifference
+        val skinAAmount = tradeUpInputComponentA.amount
+        val skinAFloatMin = tradeUpInputComponentA.skin.minFloatCap
+        val skinBFloatDifference = tradeUpInputComponentB.skin.floatCapDifference
+        val skinBAmount = tradeUpInputComponentB.amount
+        val skinBFloatMin = tradeUpInputComponentB.skin.minFloatCap
 
         val maxXRange = if (0 > mAdjusted) {
-            (tradeUpInputComponentA.skin.floatCapDifference / tradeUpInputComponentA.amount
-                    * (avgFloat * 10 - xLow * tradeUpInputComponentB.amount / tradeUpInputComponentB.skin.floatCapDifference))
+            ((avgFloat * 10 - skinBAmount * (xLow - skinBFloatMin) / skinBFloatDifference) / skinAAmount) * skinAFloatDifference + skinAFloatMin
         } else null
 
         val minXRange = if (0 > mAdjusted) {
-            (tradeUpInputComponentA.skin.floatCapDifference / tradeUpInputComponentA.amount
-                    * (avgFloat * 10 - xHigh * tradeUpInputComponentB.amount / tradeUpInputComponentB.skin.floatCapDifference))
+            ((avgFloat * 10 - skinBAmount * (xHigh - skinBFloatMin) / skinBFloatDifference) / skinAAmount) * skinAFloatDifference + skinAFloatMin
         } else null
 
         return ProbabilityLinear(

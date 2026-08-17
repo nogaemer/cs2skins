@@ -36,3 +36,7 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+.env
+/src/main/kotlin/config/AppConfig.kt
+/digest.txt

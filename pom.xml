@@ -101,11 +101,18 @@
             <version>0.55.0</version>
         </dependency>
 
-        <!-- MySQL JDBC driver -->
+        <!-- JDBC driver -->
         <dependency>
-            <groupId>mysql</groupId>
-            <artifactId>mysql-connector-java</artifactId>
-            <version>8.0.33</version>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.7.12</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.clickhouse</groupId>
+            <artifactId>clickhouse-jdbc</artifactId>
+            <version>0.9.8</version>
+            <scope>compile</scope>
         </dependency>
 
         <!-- HikariCP - Connection pooling -->
@@ -121,12 +128,14 @@
             <artifactId>slf4j-api</artifactId>
             <version>2.0.9</version>
         </dependency>
+
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.5.13</version>
+            <version>1.6.2</version>
         </dependency>
         <dependency>
+
             <groupId>org.json</groupId>
             <artifactId>json</artifactId>
             <version>20250517</version>
