@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: cs2skinsv2
+  datasource:
+    url: jdbc:postgresql://localhost:5433/tradeups
+    username: ${POSTGRES_USER}
+    password: ${POSTGRES_PASSWORD}
+    hikari:
+      cache-prep-stmts: true
+      prep-stmt-cache-size: 250
+      prep-stmt-cache-sql-limit: 2048
+
+clickhouse:
+  host: localhost
+  port: 8123
+  database: tradeups
+  username: ${CLICKHOUSE_USER}
+  password: ${CLICKHOUSE_PASSWORD}

@@ -1,11 +1,11 @@
-import models.CSWear
-import models.Skin
+import de.nogaemer.cs2skinsv2.catalog.model.CSWear
+import de.nogaemer.cs2skinsv2.catalog.model.Skin
+import de.nogaemer.cs2skinsv2.tradeup.model.DropProbability
+import de.nogaemer.cs2skinsv2.tradeup.model.ProbabilityLinear
+import de.nogaemer.cs2skinsv2.tradeup.model.TradeUpInput
+import de.nogaemer.cs2skinsv2.tradeup.model.TradeUpInputComponent
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
-import tradeup.DropProbability
-import tradeup.ProbabilityLinear
-import tradeup.TradeUpInput
-import tradeup.TradeUpInputComponent
 
 class ProbabilityTest {
 

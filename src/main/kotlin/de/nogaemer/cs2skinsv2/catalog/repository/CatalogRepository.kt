@@ -1,0 +1,1170 @@
+package de.nogaemer.cs2skinsv2.catalog.repository
+
+import de.nogaemer.cs2skinsv2.catalog.model.*
+import de.nogaemer.cs2skinsv2.catalog.model.Collection
+import de.nogaemer.cs2skinsv2.common.dto.PageRequestParams
+import de.nogaemer.cs2skinsv2.common.dto.SortSpec
+import org.springframework.stereotype.Repository
+import java.math.BigDecimal
+import java.sql.PreparedStatement
+import java.sql.ResultSet
+import java.sql.Types
+import java.time.OffsetDateTime
+import javax.sql.DataSource
+
+@Repository
+class CatalogRepository(
+    private val dataSource: DataSource
+) {
+
+    data class PriceSource(val id: Short, val code: String, val name: String, val currencyCode: String)
+
+    data class ItemUpsertRow(
+        val item: Item,
+        val collectionId: Long,
+        val weaponId: String,
+        val rarityId: Short
+    )
+
+    data class ItemWearRow(val itemId: Long, val wearCode: String)
+
+    data class CurrentPriceRow(
+        val itemId: Long,
+        val wearCode: String,
+        val priceSourceCode: String,
+        val averagePrice: BigDecimal,
+        val volume24h: Int,
+        val listings: Int = 0,
+        val buyPrice: BigDecimal? = null,
+        val sellPrice: BigDecimal? = null,
+        val liquidityScore: Double? = null,
+        val spreadPct: Double? = null,
+        val slippagePct: Double? = null,
+        val priceImpact5Pct: Double? = null,
+        val priceImpact10Pct: Double? = null,
+        val volatility1d: Double? = null,
+        val volatility7d: Double? = null,
+        val observedAt: OffsetDateTime = OffsetDateTime.now()
+    )
+
+    data class SkinFilter(
+        val collectionId: Long? = null,
+        val rarityId: Short? = null,
+        val wearBucket: String? = null, // controller resolves the "field_tested" default before calling in
+        val stattrak: Boolean? = null,
+        val souvenir: Boolean? = null,
+        val search: String? = null
+    )
+
+    data class SkinListRow(
+        val id: Long,
+        val name: String,
+        val collectionId: Long?,
+        val collectionName: String?,
+        val rarityId: Short?,
+        val rarityName: String?,
+        val rarityColorHex: String?,
+        val imageUrl: String?,
+        val stattrak: Boolean,
+        val souvenir: Boolean,
+        val averagePrice: BigDecimal?,
+        val liquidityScore: Double?
+    )
+
+    data class SkinDetailRow(
+        val id: Long,
+        val name: String,
+        val marketHashName: String,
+        val collectionId: Long?,
+        val collectionName: String?,
+        val rarityId: Short?,
+        val rarityName: String?,
+        val rarityColorHex: String?,
+        val weaponName: String?,
+        val minFloat: Double,
+        val maxFloat: Double,
+        val stattrak: Boolean,
+        val souvenir: Boolean,
+        val imageUrl: String?
+    )
+
+    private data class ResolvedPriceRow(
+        val itemId: Long, val wearBucketId: Short, val priceSourceId: Short,
+        val observedAt: OffsetDateTime, val buyPrice: BigDecimal?, val sellPrice: BigDecimal?,
+        val averagePrice: BigDecimal, val volume24h: Int, val listings: Int, val liquidityScore: Double?
+    )
+
+    data class SteamMetricsUpdate(
+        val itemId: Long,
+        val wearBucketId: Short,
+        val spreadPct: Double?,
+        val slippagePct: Double?,
+        val priceImpact5Pct: Double?,
+        val priceImpact10Pct: Double?,
+        val volatility1d: Double?,
+        val volatility7d: Double?
+    )
+
+    fun updateSteamMetricsBatch(rows: List<SteamMetricsUpdate>) {
+        if (rows.isEmpty()) return
+        val steamSourceId = findAllPriceSources().firstOrNull { it.code == "steam" }?.id
+            ?: error("Price source 'steam' not found in price_sources table")
+
+        val sql = """
+        UPDATE item_current_prices SET
+            spread_pct = ?,
+            slippage_pct = ?,
+            price_impact_5_pct = ?,
+            price_impact_10_pct = ?,
+            volatility_1d = ?,
+            volatility_7d = ?
+        WHERE item_id = ? AND wear_bucket_id = ? AND price_source_id = ?
+    """.trimIndent()
+
+        rows.chunked(500).forEach { chunk ->
+            dataSource.connection.use { conn ->
+                conn.prepareStatement(sql).use { statement ->
+                    chunk.forEach { row ->
+                        setNullableDouble(statement, 1, row.spreadPct)
+                        setNullableDouble(statement, 2, row.slippagePct)
+                        setNullableDouble(statement, 3, row.priceImpact5Pct)
+                        setNullableDouble(statement, 4, row.priceImpact10Pct)
+                        setNullableDouble(statement, 5, row.volatility1d)
+                        setNullableDouble(statement, 6, row.volatility7d)
+                        statement.setLong(7, row.itemId)
+                        statement.setShort(8, row.wearBucketId)
+                        statement.setShort(9, steamSourceId)
+                        statement.addBatch()
+                    }
+                    statement.executeBatch()
+                }
+            }
+        }
+    }
+
+    fun upsertCollection(collection: Collection): Long {
+        val id = KeyDerivation.deterministicId(collection.externalId)
+        val sql = """
+            INSERT INTO collections (id, game_id, external_id, name, image_url)
+            SELECT ?, id, ?, ?, ?
+            FROM games
+            WHERE code = 'cs2'
+            ON CONFLICT (game_id, external_id)
+            DO UPDATE SET
+                name = EXCLUDED.name,
+                image_url = EXCLUDED.image_url
+            RETURNING id
+        """.trimIndent()
+
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setLong(1, id)
+                statement.setString(2, collection.externalId)
+                statement.setString(3, collection.name)
+                setNullableString(statement, 4, collection.imageUrl)
+
+                statement.executeQuery().use { result ->
+                    check(result.next()) { "Could not upsert collection ${collection.externalId}" }
+                    result.getLong("id")
+                }
+            }
+        }
+    }
+
+    /** Weapons are keyed directly by external_id -- no derived value needed. */
+    fun upsertWeapon(weapon: Weapon): String {
+        val sql = """
+            INSERT INTO weapons (external_id, game_id, name, image_url)
+            SELECT ?, id, ?, ?
+            FROM games
+            WHERE code = 'cs2'
+            ON CONFLICT (game_id, external_id)
+            DO UPDATE SET
+                name = EXCLUDED.name,
+                image_url = EXCLUDED.image_url
+            RETURNING external_id
+        """.trimIndent()
+
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setString(1, weapon.externalId)
+                statement.setString(2, weapon.name)
+                setNullableString(statement, 3, weapon.imageUrl)
+
+                statement.executeQuery().use { result ->
+                    check(result.next()) { "Could not upsert weapon ${weapon.externalId}" }
+                    result.getString("external_id")
+                }
+            }
+        }
+    }
+
+    /** Curated fixed id for the 6 tradeup tiers, hash fallback otherwise -- see KeyDerivation. */
+    fun upsertRarity(rarity: Rarity): Short {
+        val id = KeyDerivation.rarityId(rarity.name, rarity.externalId)
+        val sql = """
+            INSERT INTO rarities (id, game_id, external_id, name, color_hex, sort_order)
+            SELECT ?, id, ?, ?, ?, ?
+            FROM games
+            WHERE code = 'cs2'
+            ON CONFLICT (game_id, external_id)
+            DO UPDATE SET
+                name = EXCLUDED.name,
+                color_hex = EXCLUDED.color_hex,
+                sort_order = EXCLUDED.sort_order
+            RETURNING id
+        """.trimIndent()
+
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setShort(1, id)
+                statement.setString(2, rarity.externalId)
+                statement.setString(3, rarity.name)
+                setNullableString(statement, 4, rarity.colorHex)
+                statement.setShort(5, rarity.sortOrder)
+
+                statement.executeQuery().use { result ->
+                    check(result.next()) { "Could not upsert rarity ${rarity.externalId}" }
+                    result.getShort("id")
+                }
+            }
+        }
+    }
+
+    fun upsertItem(
+        item: Item,
+        collectionDbId: Long,
+        weaponDbId: String,
+        rarityDbId: Short
+    ): Long {
+        val id = KeyDerivation.deterministicId(item.externalId)
+        val sql = """
+            INSERT INTO items (
+                id, game_id, external_id, market_hash_name, name, weapon_id,
+                collection_id, rarity_id, pattern_id, pattern_name,
+                min_float, max_float, stattrak, souvenir, image_url
+            )
+            SELECT
+                ?, id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            FROM games
+            WHERE code = 'cs2'
+            ON CONFLICT (game_id, external_id)
+            DO UPDATE SET
+                market_hash_name = EXCLUDED.market_hash_name,
+                name = EXCLUDED.name,
+                weapon_id = EXCLUDED.weapon_id,
+                collection_id = EXCLUDED.collection_id,
+                rarity_id = EXCLUDED.rarity_id,
+                pattern_id = EXCLUDED.pattern_id,
+                pattern_name = EXCLUDED.pattern_name,
+                min_float = EXCLUDED.min_float,
+                max_float = EXCLUDED.max_float,
+                stattrak = EXCLUDED.stattrak,
+                souvenir = EXCLUDED.souvenir,
+                image_url = EXCLUDED.image_url
+            RETURNING id
+        """.trimIndent()
+
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setLong(1, id)
+                statement.setString(2, item.externalId)
+                statement.setString(3, item.marketHashName)
+                statement.setString(4, item.name)
+                statement.setString(5, weaponDbId)
+                statement.setLong(6, collectionDbId)
+                statement.setShort(7, rarityDbId)
+                setNullableString(statement, 8, item.patternId)
+                setNullableString(statement, 9, item.patternName)
+                statement.setBigDecimal(10, item.minFloat.toBigDecimal())
+                statement.setBigDecimal(11, item.maxFloat.toBigDecimal())
+                statement.setBoolean(12, item.stattrak)
+                statement.setBoolean(13, item.souvenir)
+                setNullableString(statement, 14, item.imageUrl)
+
+                statement.executeQuery().use { result ->
+                    check(result.next()) { "Could not upsert item ${item.externalId}" }
+                    result.getLong("id")
+                }
+            }
+        }
+    }
+
+    fun upsertItemWearAvailability(itemId: Long, wearId: String) {
+        val sql = """
+            INSERT INTO item_wear_availability (item_id, wear_bucket_id)
+            SELECT ?, id
+            FROM wear_buckets
+            WHERE code = ?
+            ON CONFLICT DO NOTHING
+        """.trimIndent()
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setLong(1, itemId)
+                statement.setString(2, wearId)
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    fun upsertCurrentPrice(
+        itemId: Long,
+        wearId: String,
+        priceSourceCode: String,
+        averagePrice: BigDecimal,
+        volume24h: Int,
+        buyPrice: BigDecimal? = null,
+        sellPrice: BigDecimal? = null,
+        liquidityScore: Double? = null,
+        spreadPct: Double? = null,
+        slippagePct: Double? = null,
+        priceImpact5Pct: Double? = null,
+        priceImpact10Pct: Double? = null,
+        volatility1d: Double? = null,
+        volatility7d: Double? = null,
+        observedAt: OffsetDateTime = OffsetDateTime.now()
+    ): Int {
+        val sql = """
+        INSERT INTO item_current_prices (
+            item_id, wear_bucket_id, price_source_id, observed_at,
+            buy_price, sell_price, average_price, volume_24h, liquidity_score,
+            spread_pct, slippage_pct, price_impact_5_pct, price_impact_10_pct,
+            volatility_1d, volatility_7d
+        )
+        SELECT ?, wb.id, ps.id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        FROM wear_buckets wb CROSS JOIN price_sources ps
+        WHERE wb.code = ? AND ps.code = ?
+        ON CONFLICT (item_id, wear_bucket_id, price_source_id) DO UPDATE SET
+            observed_at = EXCLUDED.observed_at,
+            buy_price = EXCLUDED.buy_price,
+            sell_price = EXCLUDED.sell_price,
+            average_price = EXCLUDED.average_price,
+            volume_24h = EXCLUDED.volume_24h,
+            liquidity_score = EXCLUDED.liquidity_score,
+            spread_pct = EXCLUDED.spread_pct,
+            slippage_pct = EXCLUDED.slippage_pct,
+            price_impact_5_pct = EXCLUDED.price_impact_5_pct,
+            price_impact_10_pct = EXCLUDED.price_impact_10_pct,
+            volatility_1d = EXCLUDED.volatility_1d,
+            volatility_7d = EXCLUDED.volatility_7d
+    """.trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setLong(1, itemId)
+                statement.setObject(2, observedAt)
+                if (buyPrice == null) statement.setNull(3, Types.NUMERIC) else statement.setBigDecimal(3, buyPrice)
+                if (sellPrice == null) statement.setNull(4, Types.NUMERIC) else statement.setBigDecimal(4, sellPrice)
+                statement.setBigDecimal(5, averagePrice)
+                statement.setInt(6, volume24h)
+                setNullableDouble(statement, 7, liquidityScore)
+                setNullableDouble(statement, 8, spreadPct)
+                setNullableDouble(statement, 9, slippagePct)
+                setNullableDouble(statement, 10, priceImpact5Pct)
+                setNullableDouble(statement, 11, priceImpact10Pct)
+                setNullableDouble(statement, 12, volatility1d)
+                setNullableDouble(statement, 13, volatility7d)
+                statement.setString(14, wearId)
+                statement.setString(15, priceSourceCode)
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    fun findCollectionById(id: Long): Collection? {
+        val sql = """
+        SELECT id, external_id, name, image_url
+        FROM collections
+        WHERE id = ?
+    """.trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setLong(1, id)
+                statement.executeQuery().use { result ->
+                    if (!result.next()) return@use null
+                    Collection(
+                        id = result.getLong("id"),
+                        externalId = result.getString("external_id"),
+                        name = result.getString("name"),
+                        imageUrl = result.getString("image_url")
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Counts non-StatTrak/non-Souvenir items per collection -- matches how a collection's
+     * "size" is normally understood in CS2 (StatTrak/Souvenir are variants of the same base
+     * skin derived during seeding, not additional distinct skins for display purposes).
+     * Backs CollectionSummaryDto.itemCount.
+     */
+    fun countItemsByCollection(): Map<Long, Int> {
+        val sql = """
+        SELECT collection_id, COUNT(*) AS item_count
+        FROM items
+        WHERE collection_id IS NOT NULL AND stattrak = false AND souvenir = false
+        GROUP BY collection_id
+    """.trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.executeQuery().use { result ->
+                    val map = mutableMapOf<Long, Int>()
+                    while (result.next()) {
+                        map[result.getLong("collection_id")] = result.getInt("item_count")
+                    }
+                    map
+                }
+            }
+        }
+    }
+
+
+
+    fun findAllCollections(): List<Collection> {
+        val sql = "SELECT id, external_id, name, image_url FROM collections".trimIndent()
+
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.executeQuery().use { result ->
+                    val list = mutableListOf<Collection>()
+                    while (result.next()) {
+                        list.add(
+                            Collection(
+                                id = result.getLong("id"),
+                                externalId = result.getString("external_id"),
+                                name = result.getString("name"),
+                                imageUrl = result.getString("image_url")
+                            )
+                        )
+                    }
+                    list
+                }
+            }
+        }
+    }
+
+    /**
+     * Builds dynamic WHERE clauses + matching param list for skin filtering, so countSkins()
+     * and findSkinsPaged() share identical filter semantics (a page's totalElements must match
+     * what was actually filterable, not a subtly different WHERE clause).
+     */
+    private fun buildSkinFilterClauses(filter: SkinFilter): Pair<String, List<Any>> {
+        val clauses = mutableListOf<String>()
+        val params = mutableListOf<Any>()
+
+        filter.collectionId?.let { clauses.add("i.collection_id = ?"); params.add(it) }
+        filter.rarityId?.let { clauses.add("i.rarity_id = ?"); params.add(it) }
+        filter.stattrak?.let { clauses.add("i.stattrak = ?"); params.add(it) }
+        filter.souvenir?.let { clauses.add("i.souvenir = ?"); params.add(it) }
+        filter.search?.takeIf { it.isNotBlank() }?.let {
+            clauses.add("i.name ILIKE ?"); params.add("%$it%")
+        }
+
+        val whereClause = if (clauses.isEmpty()) "" else "WHERE " + clauses.joinToString(" AND ")
+        return whereClause to params
+    }
+
+    fun countSkins(filter: SkinFilter): Long {
+        val (whereClause, params) = buildSkinFilterClauses(filter)
+        val sql = "SELECT COUNT(*) FROM items i $whereClause"
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                params.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
+                statement.executeQuery().use { result ->
+                    result.next()
+                    result.getLong(1)
+                }
+            }
+        }
+    }
+
+    fun findSkinsPaged(filter: SkinFilter, sort: SortSpec, pageParams: PageRequestParams): List<SkinListRow> {
+        val (whereClause, filterParams) = buildSkinFilterClauses(filter)
+
+        // sortColumn is only ever one of these 3 hardcoded literals regardless of input --
+        // SortSpec.parse() already validated `sort.field` against a whitelist before this method
+        // is ever called, so this `when` can never produce anything injectable.
+        val sortColumn = when (sort.field) {
+            "averagePrice" -> "p.average_price"
+            "liquidityScore" -> "p.liquidity_score"
+            else -> "i.name"
+        }
+        val sortDirection = if (sort.direction == "desc") "DESC" else "ASC"
+
+        val sql = """
+        SELECT
+            i.id, i.name, i.collection_id, c.name AS collection_name,
+            i.rarity_id, r.name AS rarity_name, r.color_hex,
+            i.image_url, i.stattrak, i.souvenir,
+            p.average_price, p.liquidity_score
+        FROM items i
+        LEFT JOIN collections c ON c.id = i.collection_id
+        LEFT JOIN rarities r ON r.id = i.rarity_id
+        LEFT JOIN item_current_prices p
+            ON p.item_id = i.id
+            AND p.wear_bucket_id = (SELECT id FROM wear_buckets WHERE code = ?)
+            AND p.price_source_id = (SELECT id FROM price_sources WHERE code = 'steam')
+        $whereClause
+        ORDER BY $sortColumn $sortDirection NULLS LAST
+        LIMIT ? OFFSET ?
+    """.trimIndent()
+
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                var index = 1
+                statement.setString(index++, filter.wearBucket ?: "field_tested")
+                filterParams.forEach { statement.setObject(index++, it) }
+                statement.setInt(index++, pageParams.size)
+                statement.setInt(index, pageParams.page * pageParams.size)
+
+                statement.executeQuery().use { result ->
+                    val list = mutableListOf<SkinListRow>()
+                    while (result.next()) {
+                        list.add(
+                            SkinListRow(
+                                id = result.getLong("id"),
+                                name = result.getString("name"),
+                                collectionId = getNullableLong(result, "collection_id"),
+                                collectionName = result.getString("collection_name"),
+                                rarityId = getNullableShort(result, "rarity_id"),
+                                rarityName = result.getString("rarity_name"),
+                                rarityColorHex = result.getString("color_hex"),
+                                imageUrl = result.getString("image_url"),
+                                stattrak = result.getBoolean("stattrak"),
+                                souvenir = result.getBoolean("souvenir"),
+                                averagePrice = result.getBigDecimal("average_price"),
+                                liquidityScore = result.getBigDecimal("liquidity_score")?.toDouble()
+                            )
+                        )
+                    }
+                    list
+                }
+            }
+        }
+    }
+
+    fun findSkinDetailById(id: Long): SkinDetailRow? {
+        val sql = """
+        SELECT
+            i.id, i.name, i.market_hash_name, i.min_float, i.max_float, i.stattrak, i.souvenir, i.image_url,
+            c.id AS collection_id, c.name AS collection_name,
+            r.id AS rarity_id, r.name AS rarity_name, r.color_hex,
+            w.name AS weapon_name
+        FROM items i
+        LEFT JOIN collections c ON c.id = i.collection_id
+        LEFT JOIN rarities r ON r.id = i.rarity_id
+        LEFT JOIN weapons w ON w.external_id = i.weapon_id
+        WHERE i.id = ?
+    """.trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setLong(1, id)
+                statement.executeQuery().use { result ->
+                    if (!result.next()) return@use null
+                    SkinDetailRow(
+                        id = result.getLong("id"),
+                        name = result.getString("name"),
+                        marketHashName = result.getString("market_hash_name"),
+                        collectionId = getNullableLong(result, "collection_id"),
+                        collectionName = result.getString("collection_name"),
+                        rarityId = getNullableShort(result, "rarity_id"),
+                        rarityName = result.getString("rarity_name"),
+                        rarityColorHex = result.getString("color_hex"),
+                        weaponName = result.getString("weapon_name"),
+                        minFloat = result.getDouble("min_float"),
+                        maxFloat = result.getDouble("max_float"),
+                        stattrak = result.getBoolean("stattrak"),
+                        souvenir = result.getBoolean("souvenir"),
+                        imageUrl = result.getString("image_url")
+                    )
+                }
+            }
+        }
+    }
+
+    /** All wear buckets' current Steam prices for one item -- backs the skin detail endpoint's pricesByWear[]. */
+    fun findPricesForItem(itemId: Long): List<CurrentPrice> {
+        val sql = """
+        SELECT item_id, wear_bucket_id, price_source_id, observed_at,
+               buy_price, sell_price, average_price, volume_24h, liquidity_score,
+               spread_pct, slippage_pct, price_impact_5_pct, price_impact_10_pct,
+               volatility_1d, volatility_7d
+        FROM item_current_prices
+        WHERE item_id = ? AND price_source_id = (SELECT id FROM price_sources WHERE code = 'steam')
+    """.trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setLong(1, itemId)
+                statement.executeQuery().use { result ->
+                    val list = mutableListOf<CurrentPrice>()
+                    while (result.next()) {
+                        list.add(
+                            CurrentPrice(
+                                itemId = result.getLong("item_id"),
+                                wearBucketId = result.getShort("wear_bucket_id"),
+                                priceSourceId = result.getShort("price_source_id"),
+                                observedAt = result.getObject("observed_at", OffsetDateTime::class.java),
+                                averagePrice = result.getBigDecimal("average_price"),
+                                volume24h = result.getInt("volume_24h"),
+                                buyPrice = result.getBigDecimal("buy_price"),
+                                sellPrice = result.getBigDecimal("sell_price"),
+                                liquidityScore = result.getBigDecimal("liquidity_score")?.toDouble(),
+                                spreadPct = result.getBigDecimal("spread_pct")?.toDouble(),
+                                slippagePct = result.getBigDecimal("slippage_pct")?.toDouble(),
+                                priceImpact5Pct = result.getBigDecimal("price_impact_5_pct")?.toDouble(),
+                                priceImpact10Pct = result.getBigDecimal("price_impact_10_pct")?.toDouble(),
+                                volatility1d = result.getBigDecimal("volatility_1d")?.toDouble(),
+                                volatility7d = result.getBigDecimal("volatility_7d")?.toDouble()
+                            )
+                        )
+                    }
+                    list
+                }
+            }
+        }
+    }
+
+
+    fun findAllRaritiesOrdered(): List<Rarity> {
+        val sql = """
+            SELECT id, external_id, name, color_hex, sort_order
+            FROM rarities
+            ORDER BY sort_order
+        """.trimIndent()
+
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.executeQuery().use { result ->
+                    val list = mutableListOf<Rarity>()
+                    while (result.next()) {
+                        list.add(
+                            Rarity(
+                                id = result.getShort("id"),
+                                externalId = result.getString("external_id"),
+                                name = result.getString("name"),
+                                colorHex = result.getString("color_hex"),
+                                sortOrder = result.getShort("sort_order")
+                            )
+                        )
+                    }
+                    list
+                }
+            }
+        }
+    }
+
+    fun findItemsByCollection(collectionId: Long, stattrak: Boolean, souvenir: Boolean = false): List<Item> {
+        val sql = """
+            SELECT id, external_id, market_hash_name, name, weapon_id,
+                   collection_id, rarity_id, pattern_id, pattern_name,
+                   min_float, max_float, stattrak, souvenir, image_url
+            FROM items
+            WHERE collection_id = ? AND stattrak = ? AND souvenir = ?
+        """.trimIndent()
+
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setLong(1, collectionId)
+                statement.setBoolean(2, stattrak)
+                statement.setBoolean(3, souvenir)
+
+                statement.executeQuery().use { result ->
+                    val list = mutableListOf<Item>()
+                    while (result.next()) list.add(mapItemRow(result))
+                    list
+                }
+            }
+        }
+    }
+
+    fun findItemsByCollectionAndRarity(collectionId: Long, rarityId: Short): List<Item> {
+        val sql = """
+            SELECT id, external_id, market_hash_name, name, weapon_id,
+                   collection_id, rarity_id, pattern_id, pattern_name,
+                   min_float, max_float, stattrak, souvenir, image_url
+            FROM items
+            WHERE collection_id = ? AND rarity_id = ?
+        """.trimIndent()
+
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setLong(1, collectionId)
+                statement.setShort(2, rarityId)
+
+                statement.executeQuery().use { result ->
+                    val list = mutableListOf<Item>()
+                    while (result.next()) list.add(mapItemRow(result))
+                    list
+                }
+            }
+        }
+    }
+
+    fun findCurrentPrice(itemId: Long, wearBucketId: Short, priceSourceId: Short? = null): CurrentPrice? {
+        val sql = """
+        SELECT item_id, wear_bucket_id, price_source_id, observed_at,
+               buy_price, sell_price, average_price, volume_24h, liquidity_score,
+               spread_pct, slippage_pct, price_impact_5_pct, price_impact_10_pct,
+               volatility_1d, volatility_7d
+        FROM item_current_prices
+        WHERE item_id = ? AND wear_bucket_id = ?
+          AND (? IS NULL OR price_source_id = ?)
+        ORDER BY observed_at DESC
+        LIMIT 1
+    """.trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setLong(1, itemId)
+                statement.setShort(2, wearBucketId)
+                if (priceSourceId == null) statement.setNull(3, Types.SMALLINT) else statement.setShort(3, priceSourceId)
+                if (priceSourceId == null) statement.setNull(4, Types.SMALLINT) else statement.setShort(4, priceSourceId)
+                statement.executeQuery().use { result ->
+                    if (!result.next()) return@use null
+                    CurrentPrice(
+                        itemId = result.getLong("item_id"),
+                        wearBucketId = result.getShort("wear_bucket_id"),
+                        priceSourceId = result.getShort("price_source_id"),
+                        observedAt = result.getObject("observed_at", OffsetDateTime::class.java),
+                        averagePrice = result.getBigDecimal("average_price"),
+                        volume24h = result.getInt("volume_24h"),
+                        buyPrice = result.getBigDecimal("buy_price"),
+                        sellPrice = result.getBigDecimal("sell_price"),
+                        liquidityScore = result.getBigDecimal("liquidity_score")?.toDouble(),
+                        spreadPct = result.getBigDecimal("spread_pct")?.toDouble(),
+                        slippagePct = result.getBigDecimal("slippage_pct")?.toDouble(),
+                        priceImpact5Pct = result.getBigDecimal("price_impact_5_pct")?.toDouble(),
+                        priceImpact10Pct = result.getBigDecimal("price_impact_10_pct")?.toDouble(),
+                        volatility1d = result.getBigDecimal("volatility_1d")?.toDouble(),
+                        volatility7d = result.getBigDecimal("volatility_7d")?.toDouble()
+                    )
+                }
+            }
+        }
+    }
+
+    fun findAllCurrentPrices(): List<CurrentPrice> {
+        val sql = """
+        SELECT item_id, wear_bucket_id, price_source_id, observed_at,
+               buy_price, sell_price, average_price, volume_24h, liquidity_score,
+               spread_pct, slippage_pct, price_impact_5_pct, price_impact_10_pct,
+               volatility_1d, volatility_7d
+        FROM item_current_prices
+    """.trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.executeQuery().use { result ->
+                    val list = mutableListOf<CurrentPrice>()
+                    while (result.next()) {
+                        list.add(
+                            CurrentPrice(
+                                itemId = result.getLong("item_id"),
+                                wearBucketId = result.getShort("wear_bucket_id"),
+                                priceSourceId = result.getShort("price_source_id"),
+                                observedAt = result.getObject("observed_at", OffsetDateTime::class.java),
+                                averagePrice = result.getBigDecimal("average_price"),
+                                volume24h = result.getInt("volume_24h"),
+                                buyPrice = result.getBigDecimal("buy_price"),
+                                sellPrice = result.getBigDecimal("sell_price"),
+                                liquidityScore = result.getBigDecimal("liquidity_score")?.toDouble(),
+                                spreadPct = result.getBigDecimal("spread_pct")?.toDouble(),
+                                slippagePct = result.getBigDecimal("slippage_pct")?.toDouble(),
+                                priceImpact5Pct = result.getBigDecimal("price_impact_5_pct")?.toDouble(),
+                                priceImpact10Pct = result.getBigDecimal("price_impact_10_pct")?.toDouble(),
+                                volatility1d = result.getBigDecimal("volatility_1d")?.toDouble(),
+                                volatility7d = result.getBigDecimal("volatility_7d")?.toDouble()
+                            )
+                        )
+                    }
+                    list
+                }
+            }
+        }
+    }
+
+    fun findAllWearBuckets(): List<WearBucket> {
+        val sql = """
+            SELECT id, code, display_name, min_float, max_float, generation_min_float, probability
+            FROM wear_buckets
+        """.trimIndent()
+
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.executeQuery().use { result ->
+                    val list = mutableListOf<WearBucket>()
+                    while (result.next()) {
+                        list.add(
+                            WearBucket(
+                                id = result.getShort("id"),
+                                code = result.getString("code"),
+                                displayName = result.getString("display_name"),
+                                minFloat = result.getDouble("min_float"),
+                                maxFloat = result.getDouble("max_float"),
+                                generationMinFloat = result.getDouble("generation_min_float"),
+                                probability = result.getDouble("probability")
+                            )
+                        )
+                    }
+                    list
+                }
+            }
+        }
+    }
+
+    fun findAllItems(): List<Item> {
+        val sql = """
+            SELECT id, external_id, market_hash_name, name, weapon_id,
+                   collection_id, rarity_id, pattern_id, pattern_name,
+                   min_float, max_float, stattrak, souvenir, image_url
+            FROM items
+        """.trimIndent()
+
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.executeQuery().use { result ->
+                    val list = mutableListOf<Item>()
+                    while (result.next()) list.add(mapItemRow(result))
+                    list
+                }
+            }
+        }
+    }
+
+    fun findGameId(code: String): Short {
+        val sql = "SELECT id FROM games WHERE code = ?"
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setString(1, code)
+                statement.executeQuery().use { result ->
+                    check(result.next()) { "Game not found: $code" }
+                    result.getShort("id")
+                }
+            }
+        }
+    }
+
+    /** weapon_id is TEXT now (weapons.external_id) -- plain getString, no nullable-Short handling needed. */
+    private fun mapItemRow(result: ResultSet): Item = Item(
+        id = result.getLong("id"),
+        externalId = result.getString("external_id"),
+        marketHashName = result.getString("market_hash_name"),
+        name = result.getString("name"),
+        weaponId = result.getString("weapon_id"),
+        collectionId = getNullableLong(result, "collection_id"),
+        rarityId = getNullableShort(result, "rarity_id"),
+        patternId = result.getString("pattern_id"),
+        patternName = result.getString("pattern_name"),
+        minFloat = result.getDouble("min_float"),
+        maxFloat = result.getDouble("max_float"),
+        stattrak = result.getBoolean("stattrak"),
+        souvenir = result.getBoolean("souvenir"),
+        imageUrl = result.getString("image_url")
+    )
+
+    fun findAllPriceSources(): List<PriceSource> {
+        val sql = "SELECT id, code, name, currency_code FROM price_sources".trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.executeQuery().use { result ->
+                    val list = mutableListOf<PriceSource>()
+                    while (result.next()) {
+                        list.add(
+                            PriceSource(
+                                id = result.getShort("id"),
+                                code = result.getString("code"),
+                                name = result.getString("name"),
+                                currencyCode = result.getString("currency_code")
+                            )
+                        )
+                    }
+                    list
+                }
+            }
+        }
+    }
+
+    fun upsertCollectionsBatch(collections: List<Collection>) {
+        if (collections.isEmpty()) return
+        val gameId = findGameId("cs2")
+        collections.distinctBy { it.externalId }.chunked(2000).forEach { upsertCollectionsChunk(it, gameId) }
+    }
+
+    private fun upsertCollectionsChunk(chunk: List<Collection>, gameId: Short) {
+        val valuesSql = chunk.joinToString(",") { "(?,?,?,?,?)" }
+        val sql = """
+        INSERT INTO collections (id, game_id, external_id, name, image_url)
+        VALUES $valuesSql
+        ON CONFLICT (game_id, external_id)
+        DO UPDATE SET name = EXCLUDED.name, image_url = EXCLUDED.image_url
+    """.trimIndent()
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                var index = 1
+                chunk.forEach { c ->
+                    statement.setLong(index++, KeyDerivation.deterministicId(c.externalId))
+                    statement.setShort(index++, gameId)
+                    statement.setString(index++, c.externalId)
+                    statement.setString(index++, c.name)
+                    setNullableString(statement, index++, c.imageUrl)
+                }
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    fun upsertWeaponsBatch(weapons: List<Weapon>) {
+        if (weapons.isEmpty()) return
+        val gameId = findGameId("cs2")
+        weapons.distinctBy { it.externalId }.chunked(2000).forEach { upsertWeaponsChunk(it, gameId) }
+    }
+
+    private fun upsertWeaponsChunk(chunk: List<Weapon>, gameId: Short) {
+        val valuesSql = chunk.joinToString(",") { "(?,?,?,?)" }
+        val sql = """
+        INSERT INTO weapons (external_id, game_id, name, image_url)
+        VALUES $valuesSql
+        ON CONFLICT (game_id, external_id)
+        DO UPDATE SET name = EXCLUDED.name, image_url = EXCLUDED.image_url
+    """.trimIndent()
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                var index = 1
+                chunk.forEach { w ->
+                    statement.setString(index++, w.externalId)
+                    statement.setShort(index++, gameId)
+                    statement.setString(index++, w.name)
+                    setNullableString(statement, index++, w.imageUrl)
+                }
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    fun upsertRaritiesBatch(rarities: List<Rarity>) {
+        if (rarities.isEmpty()) return
+        val gameId = findGameId("cs2")
+        rarities.distinctBy { it.externalId }.chunked(2000).forEach { upsertRaritiesChunk(it, gameId) }
+    }
+
+    private fun upsertRaritiesChunk(chunk: List<Rarity>, gameId: Short) {
+        val valuesSql = chunk.joinToString(",") { "(?,?,?,?,?,?)" }
+        val sql = """
+        INSERT INTO rarities (id, game_id, external_id, name, color_hex, sort_order)
+        VALUES $valuesSql
+        ON CONFLICT (game_id, external_id)
+        DO UPDATE SET name = EXCLUDED.name, color_hex = EXCLUDED.color_hex, sort_order = EXCLUDED.sort_order
+    """.trimIndent()
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                var index = 1
+                chunk.forEach { r ->
+                    statement.setShort(index++, KeyDerivation.rarityId(r.name, r.externalId))
+                    statement.setShort(index++, gameId)
+                    statement.setString(index++, r.externalId)
+                    statement.setString(index++, r.name)
+                    setNullableString(statement, index++, r.colorHex)
+                    statement.setShort(index++, r.sortOrder)
+                }
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    /** ~15 bind params/row -- 1000-row chunks keep every chunk well under Postgres's ~65k param limit. */
+    fun upsertItemsBatch(rows: List<ItemUpsertRow>) {
+        if (rows.isEmpty()) return
+        val gameId = findGameId("cs2")
+        rows.distinctBy { it.item.externalId }.chunked(1000).forEach { upsertItemsChunk(it, gameId) }
+    }
+
+    private fun upsertItemsChunk(chunk: List<ItemUpsertRow>, gameId: Short) {
+        cleanupStaleMarketHashNameCollisions(chunk)
+
+        val valuesSql = chunk.joinToString(",") { "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)" }
+        val sql = """
+        INSERT INTO items (
+            id, game_id, external_id, market_hash_name, name, weapon_id,
+            collection_id, rarity_id, pattern_id, pattern_name,
+            min_float, max_float, stattrak, souvenir, image_url
+        )
+        VALUES $valuesSql
+        ON CONFLICT (game_id, external_id)
+        DO UPDATE SET
+            market_hash_name = EXCLUDED.market_hash_name,
+            name = EXCLUDED.name,
+            weapon_id = EXCLUDED.weapon_id,
+            collection_id = EXCLUDED.collection_id,
+            rarity_id = EXCLUDED.rarity_id,
+            pattern_id = EXCLUDED.pattern_id,
+            pattern_name = EXCLUDED.pattern_name,
+            min_float = EXCLUDED.min_float,
+            max_float = EXCLUDED.max_float,
+            stattrak = EXCLUDED.stattrak,
+            souvenir = EXCLUDED.souvenir,
+            image_url = EXCLUDED.image_url
+    """.trimIndent()
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                var index = 1
+                chunk.forEach { row ->
+                    statement.setLong(index++, KeyDerivation.deterministicId(row.item.externalId))
+                    statement.setShort(index++, gameId)
+                    statement.setString(index++, row.item.externalId)
+                    statement.setString(index++, row.item.marketHashName)
+                    statement.setString(index++, row.item.name)
+                    statement.setString(index++, row.weaponId)
+                    statement.setLong(index++, row.collectionId)
+                    statement.setShort(index++, row.rarityId)
+                    setNullableString(statement, index++, row.item.patternId)
+                    setNullableString(statement, index++, row.item.patternName)
+                    statement.setBigDecimal(index++, row.item.minFloat.toBigDecimal())
+                    statement.setBigDecimal(index++, row.item.maxFloat.toBigDecimal())
+                    statement.setBoolean(index++, row.item.stattrak)
+                    statement.setBoolean(index++, row.item.souvenir)
+                    setNullableString(statement, index++, row.item.imageUrl)
+                }
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    /**
+     * Deletes any existing row whose market_hash_name collides with a row about
+     * to be inserted/updated in this chunk, but whose external_id differs --
+     * i.e. a stale duplicate left over from a previous run under an old id.
+     * Safe: item_wear_availability / item_current_prices / tradeup_recipes /
+     * tradeup_recipe_outcomes all cascade or are already empty post-migration,
+     * so deleting a stale item row here doesn't orphan anything live.
+     */
+    private fun cleanupStaleMarketHashNameCollisions(chunk: List<ItemUpsertRow>) {
+        val valuesSql = chunk.joinToString(",") { "(?,?)" }
+        val sql = """
+        DELETE FROM items i
+        USING (VALUES $valuesSql) AS v(market_hash_name, external_id)
+        WHERE i.market_hash_name = v.market_hash_name
+          AND i.external_id <> v.external_id
+    """.trimIndent()
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                var index = 1
+                chunk.forEach { row ->
+                    statement.setString(index++, row.item.marketHashName)
+                    statement.setString(index++, row.item.externalId)
+                }
+                val deleted = statement.executeUpdate()
+                if (deleted > 0) {
+                    println("Cleaned up $deleted stale item row(s) with colliding market_hash_name from a previous run")
+                }
+            }
+        }
+    }
+
+
+    fun upsertItemWearAvailabilityBatch(rows: List<ItemWearRow>) {
+        if (rows.isEmpty()) return
+        val wearIdByCode = findAllWearBuckets().associate { it.code to it.id }
+        rows.mapNotNull { r -> wearIdByCode[r.wearCode]?.let { r.itemId to it } }
+            .distinct()
+            .chunked(3000)
+            .forEach { upsertItemWearAvailabilityChunk(it) }
+    }
+
+    private fun upsertItemWearAvailabilityChunk(chunk: List<Pair<Long, Short>>) {
+        val valuesSql = chunk.joinToString(",") { "(?,?)" }
+        val sql = """
+        INSERT INTO item_wear_availability (item_id, wear_bucket_id)
+        VALUES $valuesSql
+        ON CONFLICT DO NOTHING
+    """.trimIndent()
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                var index = 1
+                chunk.forEach { (itemId, wearBucketId) ->
+                    statement.setLong(index++, itemId)
+                    statement.setShort(index++, wearBucketId)
+                }
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    fun upsertCurrentPricesBatch(rows: List<CurrentPriceRow>) {
+        if (rows.isEmpty()) return
+        val wearIdByCode = findAllWearBuckets().associate { it.code to it.id }
+        val sourceIdByCode = findAllPriceSources().associate { it.code to it.id }
+
+        val resolved = rows.mapNotNull { r ->
+            val wearId = wearIdByCode[r.wearCode] ?: return@mapNotNull null
+            val sourceId = sourceIdByCode[r.priceSourceCode] ?: return@mapNotNull null
+            ResolvedPriceRow(
+                r.itemId, wearId, sourceId, r.observedAt, r.buyPrice, r.sellPrice,
+                r.averagePrice, r.volume24h, r.listings, r.liquidityScore
+            )
+        }
+        resolved.chunked(2000).forEach { upsertCurrentPricesChunk(it) }
+    }
+
+    private fun upsertCurrentPricesChunk(chunk: List<ResolvedPriceRow>) {
+        val valuesSql = chunk.joinToString(",") { "(?,?,?,?,?,?,?,?,?,?)" }
+        val sql = """
+        INSERT INTO item_current_prices (
+            item_id, wear_bucket_id, price_source_id, observed_at,
+            buy_price, sell_price, average_price, volume_24h, listings, liquidity_score
+        )
+        VALUES $valuesSql
+        ON CONFLICT (item_id, wear_bucket_id, price_source_id)
+        DO UPDATE SET
+            observed_at = EXCLUDED.observed_at,
+            buy_price = EXCLUDED.buy_price,
+            sell_price = EXCLUDED.sell_price,
+            average_price = EXCLUDED.average_price,
+            volume_24h = EXCLUDED.volume_24h,
+            listings = EXCLUDED.listings,
+            liquidity_score = EXCLUDED.liquidity_score
+    """.trimIndent()
+
+        dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                var index = 1
+                chunk.forEach { r ->
+                    statement.setLong(index++, r.itemId)
+                    statement.setShort(index++, r.wearBucketId)
+                    statement.setShort(index++, r.priceSourceId)
+                    statement.setObject(index++, r.observedAt)
+                    if (r.buyPrice == null) statement.setNull(index++, Types.NUMERIC) else statement.setBigDecimal(index++, r.buyPrice)
+                    if (r.sellPrice == null) statement.setNull(index++, Types.NUMERIC) else statement.setBigDecimal(index++, r.sellPrice)
+                    statement.setBigDecimal(index++, r.averagePrice)
+                    statement.setInt(index++, r.volume24h)
+                    statement.setInt(index++, r.listings)
+                    if (r.liquidityScore == null) statement.setNull(index++, Types.NUMERIC) else statement.setBigDecimal(index++, BigDecimal.valueOf(r.liquidityScore))
+                }
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    private fun getNullableShort(result: ResultSet, column: String): Short? {
+        val value = result.getInt(column)
+        return if (result.wasNull()) null else value.toShort()
+    }
+
+    private fun getNullableLong(result: ResultSet, column: String): Long? {
+        val value = result.getLong(column)
+        return if (result.wasNull()) null else value
+    }
+
+    private fun setNullableString(statement: PreparedStatement, index: Int, value: String?) {
+        if (value == null) statement.setNull(index, Types.VARCHAR) else statement.setString(index, value)
+    }
+
+    private fun setNullableDouble(statement: PreparedStatement, index: Int, value: Double?) {
+        if (value == null) statement.setNull(index, Types.NUMERIC)
+        else statement.setBigDecimal(index, BigDecimal.valueOf(value))
+    }
+}
