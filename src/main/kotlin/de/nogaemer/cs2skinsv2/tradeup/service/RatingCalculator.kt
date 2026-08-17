@@ -107,13 +107,33 @@ object RatingCalculator {
         requiredQtyA: Int,
         requiredQtyB: Int,
         outputMetrics: List<SkinMarketMetrics>
+    ): RatingResult = calculate(
+        roiWithDropChange = tradeUp.roiWithDropChange,
+        profitChance = tradeUp.profitChance,
+        inputA = inputA,
+        inputB = inputB,
+        requiredQtyA = requiredQtyA,
+        requiredQtyB = requiredQtyB,
+        outputMetrics = outputMetrics,
+        outcomeProbabilities = tradeUp.outcomeProbabilities
+    )
+
+    fun calculate(
+        roiWithDropChange: Double,
+        profitChance: Double,
+        inputA: SkinMarketMetrics,
+        inputB: SkinMarketMetrics,
+        requiredQtyA: Int,
+        requiredQtyB: Int,
+        outputMetrics: List<SkinMarketMetrics>,
+        outcomeProbabilities: List<Double>
     ): RatingResult {
-        val roiScore = sigmoid(ROI_SIGMOID_K * tradeUp.roiWithDropChange)
-        val profitChanceScore = tradeUp.profitChance.coerceIn(0.0, 1.0)
+        val roiScore = sigmoid(ROI_SIGMOID_K * roiWithDropChange)
+        val profitChanceScore = profitChance.coerceIn(0.0, 1.0)
 
         val execCostA = execCostPct(inputA)
         val execCostB = execCostPct(inputB)
-        val execCostOutput = probabilityWeightedAverage(outputMetrics, tradeUp.outcomeProbabilities) { execCostPct(it) }
+        val execCostOutput = probabilityWeightedAverage(outputMetrics, outcomeProbabilities) { execCostPct(it) }
         val execCostScore = minOf(
             saturate(execCostA, EXEC_COST_THRESHOLD_PCT),
             saturate(execCostB, EXEC_COST_THRESHOLD_PCT),
@@ -124,19 +144,15 @@ object RatingCalculator {
             inputA.volatility7d ?: VOLATILITY_PLACEHOLDER,
             inputB.volatility7d ?: VOLATILITY_PLACEHOLDER
         )
-        val volOutput = probabilityWeightedAverage(outputMetrics, tradeUp.outcomeProbabilities) {
+        val volOutput = probabilityWeightedAverage(outputMetrics, outcomeProbabilities) {
             it.volatility7d ?: VOLATILITY_PLACEHOLDER
         }
-        // Compounded variance across two sequential mandatory 7-day trade
-        // locks (buy the inputs, wait; receive the output, wait again) --
-        // NOT an average of the two, since the exposure windows don't
-        // overlap. Both terms are in percentage points, so the result is too.
         val volatilityCombined7d = sqrt(volInput * volInput + volOutput * volOutput)
         val volScore = saturate(volatilityCombined7d, VOLATILITY_THRESHOLD)
 
         val liquidityA = inputA.liquidityScore ?: LIQUIDITY_PLACEHOLDER
         val liquidityB = inputB.liquidityScore ?: LIQUIDITY_PLACEHOLDER
-        val liquidityOutput = probabilityWeightedAverage(outputMetrics, tradeUp.outcomeProbabilities) {
+        val liquidityOutput = probabilityWeightedAverage(outputMetrics, outcomeProbabilities) {
             it.liquidityScore ?: LIQUIDITY_PLACEHOLDER
         }
         val liquidityScore = minOf(liquidityA, liquidityB, liquidityOutput) / 100.0

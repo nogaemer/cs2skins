@@ -67,7 +67,7 @@ $PostgresContainer = "cs2-postgres"
 $ClickHouseContainer = "cs2-clickhouse"
 
 # --- Load infra/.env, next to this script ---
-$EnvFilePath = Join-Path $PSScriptRoot ".env"
+$EnvFilePath = Join-Path (Split-Path $PSScriptRoot -Parent) ".env"
 if (-not (Test-Path $EnvFilePath)) {
     throw "$EnvFilePath not found -- this script expects .env in the same folder as itself."
 }

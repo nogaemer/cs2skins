@@ -9,6 +9,13 @@ spring:
       cache-prep-stmts: true
       prep-stmt-cache-size: 250
       prep-stmt-cache-sql-limit: 2048
+app:
+  security:
+    admin-username: ${ADMIN_USERNAME:admin}
+    admin-password: ${ADMIN_PASSWORD:admin}
+  scheduling:
+    daily-price-cron: ${DAILY_PRICE_CRON:0 0 2 * * ?}
+    daily-metrics-cron: ${DAILY_METRICS_CRON:0 0 3 * * ?}
 
 clickhouse:
   host: localhost

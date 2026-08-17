@@ -98,8 +98,8 @@ class PriceIngestionService(
                         averagePrice = BigDecimal.valueOf(averagePrice),
                         volume24h = volume24h,
                         listings = listings,
-                        buyPrice = ask?.let { BigDecimal.valueOf(it) },
-                        sellPrice = bid?.let { BigDecimal.valueOf(it) },
+                        buyPrice = bid?.let { BigDecimal.valueOf(it) },
+                        sellPrice = ask?.let { BigDecimal.valueOf(it) },
                         liquidityScore = liquidityScore
                         // spread/slippage/price_impact/volatility intentionally omitted here --
                         // ingestSteamMetrics() fills those in separately, without clobbering them.

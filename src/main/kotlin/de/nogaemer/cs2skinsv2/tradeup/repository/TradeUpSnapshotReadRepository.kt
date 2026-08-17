@@ -4,6 +4,7 @@ import de.nogaemer.cs2skinsv2.common.dto.PageRequestParams
 import de.nogaemer.cs2skinsv2.common.dto.SortSpec
 import de.nogaemer.cs2skinsv2.config.ClickHouseClientFactory
 import org.springframework.stereotype.Repository
+import java.math.BigInteger
 import java.time.Instant
 import java.util.*
 
@@ -26,12 +27,18 @@ class TradeUpSnapshotReadRepository(
     private val clickHouseClientFactory: ClickHouseClientFactory
 ) {
 
+
     data class TradeUpSnapshotRow(
         val recipeId: UUID,
+        val runId: Long,
         val skin1ItemId: Long,
         val skin2ItemId: Long,
         val skin1Count: Int,
         val skin2Count: Int,
+        val skin1Float: Float,
+        val skin2Float: Float,
+        val averageInputFloat: Float,
+        val averageRawInputFloat: Float,
         val skin1WearBucketId: Int,
         val skin2WearBucketId: Int,
         val rating: Float,
@@ -56,9 +63,13 @@ class TradeUpSnapshotReadRepository(
         val minRoi: Double? = null
     )
 
+    private fun java.sql.ResultSet.getUnsignedLongAsSignedLong(column: String): Long =
+        this.getObject(column, BigInteger::class.java).toLong()
+
     private val ROW_COLUMNS = """
-        tradeup_recipe_id, skin_1_item_id, skin_2_item_id, skin_1_count, skin_2_count,
-        skin_1_wear_bucket_id, skin_2_wear_bucket_id, rating, roi, roi_with_drop_change,
+        tradeup_recipe_id, run_id, skin_1_item_id, skin_2_item_id, skin_1_count, skin_2_count,
+        skin_1_wear_bucket_id, skin_2_wear_bucket_id, skin_1_float, skin_2_float,
+        average_input_float, average_raw_input_float, rating, roi, roi_with_drop_change,
         profit_chance, input_cost, input_cost_with_drop_change, expected_value, profit_abs,
         profit_with_drop_change, depth_gate, volatility_combined_7d, outcome_count,
         algorithm_version, snapshot_at
@@ -175,14 +186,20 @@ class TradeUpSnapshotReadRepository(
         }
     }
 
+
     private fun mapRows(result: java.sql.ResultSet): List<TradeUpSnapshotRow> {
         val list = mutableListOf<TradeUpSnapshotRow>()
         while (result.next()) {
             list.add(
                 TradeUpSnapshotRow(
                     recipeId = result.getObject("tradeup_recipe_id", UUID::class.java),
-                    skin1ItemId = result.getLong("skin_1_item_id"),
-                    skin2ItemId = result.getLong("skin_2_item_id"),
+                    runId = result.getUnsignedLongAsSignedLong("run_id"),
+                    skin1ItemId = result.getUnsignedLongAsSignedLong("skin_1_item_id"),
+                    skin2ItemId = result.getUnsignedLongAsSignedLong("skin_2_item_id"),
+                    skin1Float = result.getFloat("skin_1_float"),
+                    skin2Float = result.getFloat("skin_2_float"),
+                    averageInputFloat = result.getFloat("average_input_float"),
+                    averageRawInputFloat = result.getFloat("average_raw_input_float"),
                     skin1Count = result.getInt("skin_1_count"),
                     skin2Count = result.getInt("skin_2_count"),
                     skin1WearBucketId = result.getInt("skin_1_wear_bucket_id"),

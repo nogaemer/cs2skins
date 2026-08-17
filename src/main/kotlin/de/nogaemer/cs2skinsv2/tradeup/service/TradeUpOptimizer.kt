@@ -78,8 +78,9 @@ class TradeUpOptimizer(
         val outputFloat: Double
     )
 
-    fun optimizeAll() {
-        val runId = runRepository.startRun(
+
+    fun optimizeAll(existingRunId: Long? = null) {
+        val runId = existingRunId ?: runRepository.startRun(
             intervalLabel = "manual",
             calculatorVersion = algorithmVersion
         )

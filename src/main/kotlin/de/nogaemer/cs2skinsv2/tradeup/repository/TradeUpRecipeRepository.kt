@@ -11,6 +11,17 @@ class TradeUpRecipeRepository(
     private val dataSource: DataSource
 ) {
 
+    data class RecipeMetadataRow(
+        val id: UUID,
+        val inputRarityId: Short,
+        val outputRarityId: Short,
+        val wearBucketId: Short,
+        val allowStattrak: Boolean,
+        val skin1ItemId: Long,
+        val skin2ItemId: Long
+    )
+
+
     data class RecipeInput(
         val gameId: Short,
         val inputRarityId: Short,
@@ -80,6 +91,32 @@ class TradeUpRecipeRepository(
                     statement.setBoolean(index++, recipe.allowStattrak)
                 }
                 statement.executeUpdate()
+            }
+        }
+    }
+
+    fun findMetadataById(id: UUID): RecipeMetadataRow? {
+        val sql = """
+        SELECT id, input_rarity_id, output_rarity_id, wear_bucket_id, allow_stattrak,
+               skin_1_item_id, skin_2_item_id
+        FROM tradeup_recipes
+        WHERE id = ?
+    """.trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                statement.setObject(1, id)
+                statement.executeQuery().use { result ->
+                    if (!result.next()) return@use null
+                    RecipeMetadataRow(
+                        id = result.getObject("id", UUID::class.java),
+                        inputRarityId = result.getShort("input_rarity_id"),
+                        outputRarityId = result.getShort("output_rarity_id"),
+                        wearBucketId = result.getShort("wear_bucket_id"),
+                        allowStattrak = result.getBoolean("allow_stattrak"),
+                        skin1ItemId = result.getLong("skin_1_item_id"),
+                        skin2ItemId = result.getLong("skin_2_item_id")
+                    )
+                }
             }
         }
     }

@@ -2,6 +2,7 @@ package de.nogaemer.cs2skinsv2.tradeup.repository
 
 import de.nogaemer.cs2skinsv2.config.ClickHouseClientFactory
 import org.springframework.stereotype.Repository
+import java.math.BigInteger
 import java.util.*
 
 /**
@@ -27,6 +28,10 @@ class TradeUpOutcomeReadRepository(
         val expectedContribution: Double
     )
 
+    private fun java.sql.ResultSet.getUnsignedLongAsSignedLong(column: String): Long =
+        this.getObject(column, BigInteger::class.java).toLong()
+
+
     /**
      * All outcomes for a recipe's most recent snapshot. Uses argMax(..., snapshot_at) per
      * outcome_index so a recipe with multiple historical runs only returns its newest
@@ -34,19 +39,19 @@ class TradeUpOutcomeReadRepository(
      */
     fun findLatestOutcomes(recipeId: UUID): List<OutcomeRow> {
         val sql = """
-            SELECT
-                outcome_index,
-                argMax(outcome_item_id, snapshot_at) AS outcome_item_id,
-                argMax(output_float, snapshot_at) AS output_float,
-                argMax(output_wear_bucket_id, snapshot_at) AS output_wear_bucket_id,
-                argMax(outcome_probability, snapshot_at) AS outcome_probability,
-                argMax(outcome_price, snapshot_at) AS outcome_price,
-                argMax(expected_contribution, snapshot_at) AS expected_contribution
-            FROM tradeups.tradeup_outcome_snapshot_raw
-            WHERE tradeup_recipe_id = ?
-            GROUP BY outcome_index
-            ORDER BY outcome_probability DESC
-        """.trimIndent()
+        SELECT
+            outcome_index,
+            argMax(outcome_item_id, snapshot_at) AS latest_outcome_item_id,
+            argMax(output_float, snapshot_at) AS latest_output_float,
+            argMax(output_wear_bucket_id, snapshot_at) AS latest_output_wear_bucket_id,
+            argMax(outcome_probability, snapshot_at) AS latest_outcome_probability,
+            argMax(outcome_price, snapshot_at) AS latest_outcome_price,
+            argMax(expected_contribution, snapshot_at) AS latest_expected_contribution
+        FROM tradeups.tradeup_outcome_snapshot_raw
+        WHERE tradeup_recipe_id = ?
+        GROUP BY outcome_index
+        ORDER BY latest_outcome_probability DESC
+    """.trimIndent()
 
         return clickHouseClientFactory.query { connection ->
             connection.prepareStatement(sql).use { statement ->
@@ -56,13 +61,13 @@ class TradeUpOutcomeReadRepository(
                     while (result.next()) {
                         list.add(
                             OutcomeRow(
-                                outcomeItemId = result.getLong("outcome_item_id"),
+                                outcomeItemId = result.getUnsignedLongAsSignedLong("latest_outcome_item_id"),
                                 outcomeIndex = result.getInt("outcome_index"),
-                                outputFloat = result.getFloat("output_float"),
-                                outputWearBucketId = result.getInt("output_wear_bucket_id"),
-                                outcomeProbability = result.getFloat("outcome_probability"),
-                                outcomePrice = result.getDouble("outcome_price"),
-                                expectedContribution = result.getDouble("expected_contribution")
+                                outputFloat = result.getFloat("latest_output_float"),
+                                outputWearBucketId = result.getInt("latest_output_wear_bucket_id"),
+                                outcomeProbability = result.getFloat("latest_outcome_probability"),
+                                outcomePrice = result.getDouble("latest_outcome_price"),
+                                expectedContribution = result.getDouble("latest_expected_contribution")
                             )
                         )
                     }
@@ -72,19 +77,18 @@ class TradeUpOutcomeReadRepository(
         }
     }
 
-    /** Batch version for expanding topOutcome across a page of list results in ~1-2 round trips. */
     fun findTopOutcomeForRecipes(recipeIds: Collection<UUID>): Map<UUID, OutcomeRow> {
         if (recipeIds.isEmpty()) return emptyMap()
         val placeholders = recipeIds.joinToString(",") { "?" }
         val sql = """
-            SELECT
-                tradeup_recipe_id,
-                argMax(outcome_item_id, outcome_probability) AS outcome_item_id,
-                max(outcome_probability) AS outcome_probability
-            FROM tradeups.tradeup_outcome_snapshot_raw
-            WHERE tradeup_recipe_id IN ($placeholders)
-            GROUP BY tradeup_recipe_id
-        """.trimIndent()
+        SELECT
+            tradeup_recipe_id,
+            argMax(outcome_item_id, outcome_probability) AS best_outcome_item_id,
+            max(outcome_probability) AS best_outcome_probability
+        FROM tradeups.tradeup_outcome_snapshot_raw
+        WHERE tradeup_recipe_id IN ($placeholders)
+        GROUP BY tradeup_recipe_id
+    """.trimIndent()
 
         return clickHouseClientFactory.query { connection ->
             connection.prepareStatement(sql).use { statement ->
@@ -94,11 +98,11 @@ class TradeUpOutcomeReadRepository(
                     while (result.next()) {
                         val recipeId = result.getObject("tradeup_recipe_id", UUID::class.java)
                         map[recipeId] = OutcomeRow(
-                            outcomeItemId = result.getLong("outcome_item_id"),
+                            outcomeItemId = result.getUnsignedLongAsSignedLong("best_outcome_item_id"),
                             outcomeIndex = 0,
                             outputFloat = 0f,
                             outputWearBucketId = 0,
-                            outcomeProbability = result.getFloat("outcome_probability"),
+                            outcomeProbability = result.getFloat("best_outcome_probability"),
                             outcomePrice = 0.0,
                             expectedContribution = 0.0
                         )
@@ -108,4 +112,6 @@ class TradeUpOutcomeReadRepository(
             }
         }
     }
+
+
 }

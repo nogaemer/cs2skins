@@ -2,6 +2,7 @@ package de.nogaemer.cs2skinsv2
 
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
+import org.springframework.scheduling.annotation.EnableScheduling
 
 /**
  * TEMPORARY: isolates BestTradeUpByPairRepository.refresh() so it can be
@@ -15,6 +16,7 @@ import org.springframework.boot.runApplication
  * definitive answer on whether refresh() actually inserted anything.
  */
 @SpringBootApplication
+@EnableScheduling
 class Cs2SkinsApplication
 
 fun main(args: Array<String>) {

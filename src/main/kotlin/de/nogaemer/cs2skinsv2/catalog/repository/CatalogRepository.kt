@@ -105,6 +105,30 @@ class CatalogRepository(
         val volatility7d: Double?
     )
 
+    fun findByIds(ids: kotlin.collections.Collection<Long>): Map<Long, Item> {
+        if (ids.isEmpty()) return emptyMap()
+        val placeholders = ids.joinToString(",") { "?" }
+        val sql = """
+        SELECT id, external_id, market_hash_name, name, weapon_id, collection_id, rarity_id,
+               pattern_id, pattern_name, min_float, max_float, stattrak, souvenir, image_url
+        FROM items
+        WHERE id IN ($placeholders)
+    """.trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                ids.forEachIndexed { index, id -> statement.setLong(index + 1, id) }
+                statement.executeQuery().use { result ->
+                    val map = mutableMapOf<Long, Item>()
+                    while (result.next()) {
+                        val item = mapItemRow(result)
+                        map[item.id] = item
+                    }
+                    map
+                }
+            }
+        }
+    }
+
     fun updateSteamMetricsBatch(rows: List<SteamMetricsUpdate>) {
         if (rows.isEmpty()) return
         val steamSourceId = findAllPriceSources().firstOrNull { it.code == "steam" }?.id
