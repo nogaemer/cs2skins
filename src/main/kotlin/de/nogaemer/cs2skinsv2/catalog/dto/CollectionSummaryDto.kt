@@ -1,7 +1,7 @@
 package de.nogaemer.cs2skinsv2.catalog.dto
 
 data class CollectionSummaryDto(
-    val id: Long,
+    val id: String,
     val name: String,
     val imageUrl: String?,
     val itemCount: Int

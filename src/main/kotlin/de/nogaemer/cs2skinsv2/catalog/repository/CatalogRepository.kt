@@ -50,10 +50,10 @@ class CatalogRepository(
     data class SkinFilter(
         val collectionId: Long? = null,
         val rarityId: Short? = null,
-        val wearBucket: String? = null, // controller resolves the "field_tested" default before calling in
+        val wearBucket: String? = null,
+        val search: String? = null,
         val stattrak: Boolean? = null,
-        val souvenir: Boolean? = null,
-        val search: String? = null
+        val souvenir: Boolean? = null
     )
 
     data class SkinListRow(
@@ -105,6 +105,27 @@ class CatalogRepository(
         val volatility7d: Double?
     )
 
+    fun findItemsByNames(names: kotlin.collections.Collection<String>): Map<String, List<Item>> {
+        if (names.isEmpty()) return emptyMap()
+        val placeholders = names.joinToString(",") { "?" }
+        val sql = """
+        SELECT id, external_id, market_hash_name, name, weapon_id,
+               collection_id, rarity_id, pattern_id, pattern_name,
+               min_float, max_float, stattrak, souvenir, image_url
+        FROM items
+        WHERE name IN ($placeholders)
+    """.trimIndent()
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(sql).use { statement ->
+                names.forEachIndexed { index, name -> statement.setString(index + 1, name) }
+                statement.executeQuery().use { result ->
+                    val items = mutableListOf<Item>()
+                    while (result.next()) items.add(mapItemRow(result))
+                    items.groupBy { it.name }
+                }
+            }
+        }
+    }
     fun findByIds(ids: kotlin.collections.Collection<Long>): Map<Long, Item> {
         if (ids.isEmpty()) return emptyMap()
         val placeholders = ids.joinToString(",") { "?" }
@@ -479,8 +500,27 @@ class CatalogRepository(
 
         filter.collectionId?.let { clauses.add("i.collection_id = ?"); params.add(it) }
         filter.rarityId?.let { clauses.add("i.rarity_id = ?"); params.add(it) }
-        filter.stattrak?.let { clauses.add("i.stattrak = ?"); params.add(it) }
-        filter.souvenir?.let { clauses.add("i.souvenir = ?"); params.add(it) }
+
+        // Always work on base skins only
+        clauses.add("i.stattrak = false")
+        clauses.add("i.souvenir = false")
+
+        filter.stattrak?.let { hasStattrak ->
+            if (hasStattrak) {
+                clauses.add("EXISTS (SELECT 1 FROM items v WHERE v.name = i.name AND v.stattrak = true)")
+            } else {
+                clauses.add("NOT EXISTS (SELECT 1 FROM items v WHERE v.name = i.name AND v.stattrak = true)")
+            }
+        }
+
+        filter.souvenir?.let { hasSouvenir ->
+            if (hasSouvenir) {
+                clauses.add("EXISTS (SELECT 1 FROM items v WHERE v.name = i.name AND v.souvenir = true)")
+            } else {
+                clauses.add("NOT EXISTS (SELECT 1 FROM items v WHERE v.name = i.name AND v.souvenir = true)")
+            }
+        }
+
         filter.search?.takeIf { it.isNotBlank() }?.let {
             clauses.add("i.name ILIKE ?"); params.add("%$it%")
         }

@@ -1,6 +1,7 @@
 package de.nogaemer.cs2skinsv2.catalog.controller
 
 import de.nogaemer.cs2skinsv2.catalog.dto.*
+import de.nogaemer.cs2skinsv2.catalog.model.Item
 import de.nogaemer.cs2skinsv2.catalog.repository.CatalogRepository
 import de.nogaemer.cs2skinsv2.common.dto.PageRequestParams
 import de.nogaemer.cs2skinsv2.common.dto.PageResponse
@@ -44,15 +45,68 @@ class SkinController(
             collectionId = collectionId,
             rarityId = rarityId,
             wearBucket = resolvedWearBucket,
+            search = search,
             stattrak = stattrak,
-            souvenir = souvenir,
-            search = search
+            souvenir = souvenir
         )
 
         val totalElements = catalogRepository.countSkins(filter)
         val rows = catalogRepository.findSkinsPaged(filter, sortSpec, pageParams)
 
+        if (rows.isEmpty()) {
+            return PageResponse.of(emptyList(), pageParams.page, pageParams.size, totalElements)
+        }
+
+        val baseNames = rows.map { it.name }.toSet()
+        val itemsByBaseName = catalogRepository.findItemsByNames(baseNames)
+
+        val steamSourceId = catalogRepository.findAllPriceSources()
+            .first { it.code == "steam" }
+            .id
+
+        val pricesByItemId = catalogRepository.findAllCurrentPrices()
+            .filter { it.priceSourceId == steamSourceId }
+            .groupBy { it.itemId }
+
+        val wearCodeById = catalogRepository.findAllWearBuckets()
+            .associate { it.id to it.code }
+
         val dtos = rows.map { row ->
+            val variants = itemsByBaseName[row.name].orEmpty()
+                .sortedWith(compareBy<Item> { it.stattrak }.thenBy { it.souvenir })
+                .map { item ->
+                    val type = when {
+                        item.stattrak -> "stattrak"
+                        item.souvenir -> "souvenir"
+                        else -> "normal"
+                    }
+
+                    val pricesByWear = pricesByItemId[item.id].orEmpty()
+                        .mapNotNull { price ->
+                            val wearCode = wearCodeById[price.wearBucketId] ?: return@mapNotNull null
+                            SkinPriceByWearDto(
+                                wearBucket = wearCode,
+                                averagePrice = price.averagePrice.toDouble(),
+                                buyPrice = price.buyPrice?.toDouble(),
+                                sellPrice = price.sellPrice?.toDouble(),
+                                liquidityScore = price.liquidityScore,
+                                spreadPct = price.spreadPct,
+                                slippagePct = price.slippagePct,
+                                priceImpact5Pct = price.priceImpact5Pct,
+                                priceImpact10Pct = price.priceImpact10Pct,
+                                volatility1d = price.volatility1d,
+                                volatility7d = price.volatility7d,
+                                observedAt = price.observedAt
+                            )
+                        }
+
+                    SkinVariantDto(
+                        type = type,
+                        itemId = item.id,
+                        pricesByWear = pricesByWear
+                    )
+                }
+
             SkinSummaryDto(
                 id = row.id,
                 name = row.name,
@@ -62,15 +116,7 @@ class SkinController(
                 rarityName = row.rarityName,
                 rarityColorHex = row.rarityColorHex,
                 imageUrl = row.imageUrl,
-                stattrak = row.stattrak,
-                souvenir = row.souvenir,
-                currentPrice = row.averagePrice?.let {
-                    SkinCurrentPriceDto(
-                        wearBucket = resolvedWearBucket,
-                        averagePrice = it.toDouble(),
-                        liquidityScore = row.liquidityScore
-                    )
-                }
+                variants = variants
             )
         }
 

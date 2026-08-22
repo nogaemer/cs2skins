@@ -21,7 +21,7 @@ class CollectionController(
 
         val dtos = collections.map { c ->
             CollectionSummaryDto(
-                id = c.id,
+                id = c.id.toString(),
                 name = c.name,
                 imageUrl = c.imageUrl,
                 itemCount = itemCounts[c.id] ?: 0
